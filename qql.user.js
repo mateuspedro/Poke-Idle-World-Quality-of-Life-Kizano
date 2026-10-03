@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Poke Idle World - Quality of Life (PIW-QOL) - KizaniN
 // @namespace    http://tampermonkey.net/
-// @version      10.4.6
+// @version      10.5.1
 // @description  Mercado e Depot fora das hunts, retorno rápido à cidade, buscas de itens e auto-reconnect resiliente.
 // @author       Desjunior (JulianoCLI)
 // @updater      KizaniN
@@ -66,7 +66,6 @@
         if (!bossMaxLogged) cancelScheduledAutoReconnectReload();
     }
     function handleCapturedPokemon(message) {
-        // A mensagem de captura pode vir com o nome direto ou dentro de um objeto poke.
         const name = message?.speciesName
             || message?.name
             || message?.pokemonName
@@ -75,12 +74,8 @@
             || '';
         const cleanName = getCleanHuntName(name);
         if (!cleanName) return;
-
-        // Só considera captura bem-sucedida (a mensagem também chega em falhas).
         if (message?.success === false) return;
 
-        // Se não estava no cache, adiciona e invalida o render do mapa
-        // para que o badge de captura apareça imediatamente.
         if (!globalCaughtPokemonNames.has(cleanName)) {
             globalCaughtPokemonNames.add(cleanName);
             saveCaughtPokemonCache();
@@ -99,9 +94,6 @@
         }
         lastSocketMessageAt = Date.now();
         const huntMessage = isHuntSocketMessage(message);
-        // Caso o site passe a manter mais de um endpoint /ws, só promove a conexão
-        // que efetivamente fala o protocolo do jogo. A primeira conexão continua como
-        // fallback para não atrasar as requisições feitas logo no carregamento.
         if (huntMessage || GAME_SOCKET_MESSAGE_TYPES.has(String(message?.type || ''))) {
             gameSocket = socket;
         }
@@ -150,8 +142,6 @@
     TrackedWebSocket.prototype = NativeWebSocket.prototype;
     Object.setPrototypeOf(TrackedWebSocket, NativeWebSocket);
     window.WebSocket = TrackedWebSocket;
-    // O patch de envio é a única forma de descobrir o slug da hunt: ele só aparece no
-    // `enter-hunt` que o próprio jogo manda quando o jogador clica no mapa.
     NativeWebSocket.prototype.send = function(data) {
         trackGameSocket(this);
         observeOutgoingGameMessage(this, data);
@@ -173,12 +163,6 @@
         return gameSocket?.readyState === NativeWebSocket.OPEN;
     }
 
-    // O jogo aceita a troca de hunt pelo próprio WebSocket: `leave-hunt` seguido de
-    // `enter-hunt` com o slug recoloca o personagem exatamente onde ele estava. Isso
-    // substitui o antigo desvio por uma hunt de escala (Paras), que tirava o jogador
-    // do lugar certo e ainda dependia de cliques no mapa para voltar.
-    // Batalhas iniciais podem demorar bastante sem emitir progresso. Trinta segundos
-    // evitam que um adversário apenas lento seja confundido com uma hunt travada.
     const HUNT_SILENCE_MS = 30000;
     const HUNT_REENTRY_DELAY_MS = 500;
     const HUNT_REENTRY_CONFIRM_MS = 30000;
@@ -186,13 +170,7 @@
     const RECONNECT_CHECK_INTERVAL_MS = 1000;
     const RECONNECT_BACKOFF_STEPS_MS = [10000, 20000, 40000];
     const RECONNECT_MAX_ATTEMPTS = RECONNECT_BACKOFF_STEPS_MS.length + 1;
-    // Com o socket fechado não há como enviar leave/enter; recarregar a página é a
-    // única saída, e só depois de uma janela longa para não brigar com a reconexão
-    // que o próprio jogo tenta fazer.
     const SOCKET_DOWN_RELOAD_MS = 45000;
-    // Mantém a memória de que esta aba estava numa hunt mesmo se a queda remover
-    // o HUD e a barra de captura. A folga maior também cobre timers atrasados em abas
-    // deixadas em segundo plano pelo navegador.
     const HUNT_CONTEXT_LOSS_GRACE_MS = 5 * 60 * 1000;
     const HUNT_MESSAGE_TYPES = new Set(['field', 'field-init', 'field-kill', 'poke-xp', 'pending', 'catch-result']);
 
@@ -204,18 +182,8 @@
     let lastHuntNameRefreshAt = 0;
     let missingSlugLogged = false;
 
-    // O script não conhece o protocolo da boss, então qualquer mensagem cujo *tipo*
-    // fale em boss/raid conta como sinal. A checagem é só no tipo, nunca no corpo:
-    // itens como "Bronze Boss Token" aparecem no inventário e no mercado e marcariam
-    // uma boss que não está acontecendo.
     const BOSS_SIGNAL_PATTERN = /boss|raid/i;
-    // Anúncios, rankings e listas de boss chegam para todo mundo o tempo todo, mesmo
-    // para quem está só caçando. Sem esta exclusão, uma dessas mensagens desligaria o
-    // auto-reconnect de um minuto em um minuto sem que nenhuma luta existisse.
     const BOSS_BROADCAST_PATTERN = /rank|chat|announ|notif|list|shop|market|token|reward|histor|log/i;
-    // Só marcadores de região da interface (`data-guide`, o padrão que o jogo usa em
-    // capture-bar, dock-map e player-level) e janelas de luta. Um `[class*="boss"]`
-    // solto pegaria o ícone de um Boss Token aberto no inventário.
     const BOSS_DOM_SELECTOR = [
         '[data-guide*="boss" i]',
         '[data-guide*="raid" i]',
@@ -225,11 +193,7 @@
         '.raid-window',
         '.raid-ui'
     ].join(',');
-    // Uma boss que termine de um jeito que não observamos não pode desligar o watchdog
-    // para sempre: o estado expira sozinho depois de um minuto sem nenhum sinal.
     const BOSS_CONTEXT_TTL_MS = 60000;
-    // Se a interface congelar exibindo uma boss, nunca enviamos leave-hunt. Depois
-    // deste teto conservador, um reload substitui a espera infinita.
     const BOSS_CONTEXT_MAX_MS = 5 * 60 * 1000;
     let bossContextUntil = 0;
     let bossContextStartedAt = 0;
@@ -256,8 +220,6 @@
 
     function isBossContext() {
         if (bossContextUntil > Date.now()) return true;
-        // A varredura no DOM só acontece quando não há sinal recente do socket, para
-        // pegar a boss de quem abriu a página com a luta já em andamento.
         if (hasBossInterface()) {
             markBossContext('interface');
             return true;
@@ -281,48 +243,32 @@
         missingSlugLogged = false;
         currentHuntSlug = clean;
         huntSlugRestored = true;
-        // sessionStorage pertence a esta aba, sobrevive a F5 e impede que outra aba
-        // substitua o destino de reconexão.
         sessionStorage.setItem(STORAGE_RECONNECT_TAB_SLUG, clean);
     }
 
-    // O slug fica no sessionStorage da aba porque o script pode ser recarregado (F5,
-    // atualização da extensão) no meio de uma hunt, quando o `enter-hunt` original já
-    // passou e não seria visto de novo.
     function getRememberedHuntSlug() {
         if (!huntSlugRestored) {
             huntSlugRestored = true;
             currentHuntSlug = currentHuntSlug
                 || sessionStorage.getItem(STORAGE_RECONNECT_TAB_SLUG)
                 || null;
-            // Resíduo do auto-reconnect antigo, que guardava a hunt de retorno enquanto
-            // fazia a parada intermediária. Nada mais lê essa chave.
             localStorage.removeItem('script_reconnect_pending_v1');
         }
         return currentHuntSlug;
     }
 
-    // O HUD continua tendo prioridade sobre o slug da sessão, porque ele informa se o
-    // jogador saiu da hunt dentro desta mesma aba. O valor lembrado só entra quando o
-    // HUD não diz nada — justamente o caso em que a conexão caiu.
     async function resolveCurrentHuntSlug() {
         const location = getCurrentHuntLocation();
         if (!location) return getRememberedHuntSlug();
         if (isKnownNonHuntLocation(location)) return null;
         await loadMapMarkersData();
         const marker = findMappedHunt(location);
-        // O catálogo do mapa identifica cidades novas por seus metadados, sem exigir
-        // que o nome seja adicionado manualmente à expressão CITY_NAMES.
         if (marker && isCityMarker(marker, location)) return null;
         const slug = getMarkerSlug(marker);
         if (slug) {
             rememberHuntSlug(slug);
             return slug;
         }
-        // Com os marcadores carregados, um nome que o mapa não conhece significa que o
-        // personagem não está numa hunt — reentrar seria tirá-lo de onde ele quis ficar.
-        // Se o fetch do mapa falhou, não há como julgar o nome e o slug lembrado ainda
-        // é a melhor aposta.
         return globalHuntMarkerData.size ? null : getRememberedHuntSlug();
     }
 
@@ -398,23 +344,14 @@
         );
     }
 
-    // Sai e volta para a mesma hunt pelo WebSocket. O `leave-hunt` é enviado pelo
-    // socket direto (sendGameMessage), então passa pelo mesmo patch de envio — por
-    // isso nada aqui zera o slug lembrado. O envio de enter-hunt só conta como sucesso
-    // depois que uma nova mensagem de progresso da hunt chega pelo WebSocket.
     async function rejoinCurrentHunt(reason) {
         if (autoReconnectInProgress || isBossContext()) return false;
-        // A trava e o cooldown são marcados antes de qualquer await: resolver o slug
-        // pode esperar o fetch dos marcadores do mapa, e nessa janela o intervalo de
-        // um segundo dispararia outras reentradas em paralelo.
         autoReconnectInProgress = true;
         lastAutoReconnectAt = Date.now();
         try {
             const slug = await resolveCurrentHuntSlug();
             if (!slug) {
                 if (isKnownNonHuntLocation(getCurrentHuntLocation())) return false;
-                // Um aviso por episódio: o cooldown sozinho ainda repetiria a mensagem
-                // a cada cinco segundos enquanto o lugar não for reconhecido.
                 if (!missingSlugLogged) {
                     missingSlugLogged = true;
                     logAutoReconnectStatus('A hunt atual não pôde ser identificada; entre nela de novo pelo mapa.', true);
@@ -485,8 +422,6 @@
                 return;
             }
         } else {
-            // Uma queda pode desmontar todo o HUD. Enquanto o socket estiver fechado,
-            // conserva o contexto anterior tempo suficiente para executar o reload.
             const mayRecoverMissingInterface = autoReconnectWasInHunt
                 && !socketOpen
                 && now - lastKnownHuntContextAt <= HUNT_CONTEXT_LOSS_GRACE_MS;
@@ -504,23 +439,16 @@
             return;
         }
         if (autoReconnectInProgress) return;
-        // Numa boss o `leave-hunt` abandonaria a luta — e o token gasto nela. O
-        // watchdog fica em espera. Se a interface permanecer congelada por cinco
-        // minutos, a saída segura é recarregar a página, nunca enviar leave-hunt.
         if (isBossContext()) {
             lastHuntSocketActivityAt = now;
             socketDownSince = 0;
             resetAutoReconnectFailures();
-            // O TTL pode atravessar o final de uma boss longa. Só aplica o teto se a
-            // interface ainda estiver presa na tela ou se o socket realmente caiu.
             if (isBossSafetyExpired() && (hasBossInterface() || !socketOpen) && !bossMaxLogged) {
                 bossMaxLogged = true;
                 scheduleAutoReconnectReload('A interface da boss permaneceu ativa por cinco minutos; recarregando sem enviar leave-hunt.');
             }
             return;
         }
-        // A verificação roda a cada segundo, mas o nome da hunt muda raramente: relê o
-        // HUD só de cinco em cinco segundos para não gravar no localStorage a cada tick.
         if (now - lastHuntNameRefreshAt >= 5000) {
             lastHuntNameRefreshAt = now;
             rememberCurrentHuntFromHud();
@@ -545,9 +473,6 @@
         if (now - lastHuntSocketActivityAt < HUNT_SILENCE_MS) return;
         if (now - lastAutoReconnectAt < RECONNECT_COOLDOWN_MS) return;
         if (now < nextAutoReconnectAt) return;
-        // A janela de análise aberta mantém isInHuntContext() verdadeiro mesmo com o
-        // personagem parado numa cidade; reentrar na hunt ali seria arrastá-lo para
-        // fora do lugar onde ele escolheu ficar.
         if (isKnownNonHuntLocation(currentLocation)) return;
         await rejoinCurrentHunt('Hunt sem resposta por 30 segundos.');
     }, RECONNECT_CHECK_INTERVAL_MS);
@@ -594,7 +519,7 @@
     const STORAGE_SCRIPT_ACTIVE = 'script_mapa_ativo_v1';
     const STORAGE_CHAT_ACTIVE = 'script_chat_ativo_v1';
     const STORAGE_NAV_MODE = 'script_nav_tp_mode_v1';
-    const STORAGE_DROP_MODE = 'script_drop_mode_v1'; // 'hover', 'icon', 'off'
+    const STORAGE_DROP_MODE = 'script_drop_mode_v1';
     const STORAGE_SELL_CONFIRM = 'script_sell_confirm_items_v1';
     const STORAGE_SELL_LOCKS = 'script_sell_locks_v1';
     const STORAGE_NATIVE_ITEM_LOCKS = 'script_native_item_locks_v1';
@@ -680,10 +605,6 @@
         document.documentElement.style.setProperty('--piw-game-font', key === 'custom' && custom ? custom : GAME_FONT_OPTIONS[key === 'custom' ? 'barlow' : key]);
     }
     function isAutoReconnectActive() { return localStorage.getItem(STORAGE_AUTO_RECONNECT) === 'true'; }
-    // A maioria das preferências vem ligada e o usuário desliga o que não quer. As
-    // listadas aqui são o contrário: só valem se o usuário marcar. A porcentagem de
-    // potencial entra nesse grupo porque é uma estimativa do script, não um dado
-    // oficial do jogo, e não deve aparecer sem que a pessoa tenha pedido.
     const OPT_IN_PREFERENCES = new Set([STORAGE_SHOW_QUALITY_POTENTIAL]);
     const preferenceEnabled = key => OPT_IN_PREFERENCES.has(key)
         ? localStorage.getItem(key) === 'true'
@@ -813,17 +734,33 @@
         }
     }
 
+    const DEFAULT_MAP_FILTERS = {
+        sort: '',
+        type: '',
+        access: 'all',
+        captured: '',
+        search: '',
+        levelMin: '',
+        levelMax: ''
+    };
+
     function getMapFilters() {
-        const fallback = {
-            sort: '',
-            type: '',
-            access: 'all',
-            captured: ''
-        };
-        return fallback;
+        const stored = localStorage.getItem(STORAGE_MAP_FILTERS);
+        if (!stored) return { ...DEFAULT_MAP_FILTERS };
+        try {
+            const parsed = JSON.parse(stored);
+            return { ...DEFAULT_MAP_FILTERS, ...(parsed && typeof parsed === 'object' ? parsed : {}) };
+        } catch {
+            return { ...DEFAULT_MAP_FILTERS };
+        }
     }
 
     function setMapFilters(filters) {
+        const merged = { ...DEFAULT_MAP_FILTERS, ...(filters || {}) };
+        localStorage.setItem(STORAGE_MAP_FILTERS, JSON.stringify(merged));
+    }
+
+    function clearMapFilters() {
         localStorage.removeItem(STORAGE_MAP_FILTERS);
     }
 
@@ -1047,7 +984,6 @@
         injectDexEnhancements();
     }
 
-    // URLs oficiais do jogo
     const POKEMON_TYPES_JSON_URL = 'https://poke.idleworld.online/game/creatures.json';
     const ITEMS_JSON_URL = 'https://poke.idleworld.online/game/items.json';
     const MAP_MARKERS_API_URL = '/api/game/map-markers';
@@ -1091,7 +1027,6 @@
         return `/assets/items/${String(icon).replace(/^\/+/, '')}`;
     }
 
-    // Caminhos ja confirmados no jogo: evita a cascata de 404 do fallback abaixo.
     const KNOWN_STONE_ICON_URLS = {
         fire_stone: '/assets/items/fire_stone.gif',
         feather_stone: '/assets/stones/feather_stone.png',
@@ -1129,7 +1064,6 @@
         if (/\bstone\b/.test(cleanName) || /stones?/i.test(category)) {
             const stoneKey = cleanName.replace(/\s+/g, '_');
             const stoneSlug = encodeURIComponent(stoneKey);
-            // Alguns devs largaram stones fora de /assets/stones/, entao tentamos os dois diretorios e as duas extensoes.
             const [firstSource, ...fallbackSources] = [...new Set([
                 KNOWN_STONE_ICON_URLS[stoneKey],
                 `/assets/stones/${stoneSlug}.png`,
@@ -1193,7 +1127,6 @@
         return mapMarkersLoadPromise;
     }
 
-    // --- TABELA COMPACTA DE TIPOS POKÉMON ---
     const TYPE_CHART = {
         normal: { rock: 0.5, ghost: 0, steel: 0.5 },
         fire: { fire: 0.5, water: 0.5, grass: 2, ice: 2, bug: 2, rock: 0.5, dragon: 0.5, steel: 2 },
@@ -1226,7 +1159,6 @@
 
     let POKEMON_TYPES = { ...BASE_POKEMON_TYPES };
 
-    // Carregamento de Criaturas da API
     async function loadExternalPokemonData() {
         try {
             const response = await fetch(POKEMON_TYPES_JSON_URL);
@@ -1259,7 +1191,6 @@
         }
     }
 
-    // Carregamento de Itens da API (para buscar os ícones botânicos/oficiais)
     async function loadExternalItemData() {
         try {
             const response = await fetch(ITEMS_JSON_URL);
@@ -1350,13 +1281,11 @@
         return [];
     }
 
-    // --- PROCESSAMENTO DE DROPS COM ÍCONES REAIS DO ITEMS.JSON ---
     function resolveItemIcon(itemName) {
         const cleanKey = itemName.toLowerCase().trim();
         let itemObj = globalItemApiData.get(cleanKey);
 
         if (!itemObj) {
-            // Tenta buscar por correspondência parcial
             for (const [key, val] of globalItemApiData.entries()) {
                 if (cleanKey.includes(key) || key.includes(cleanKey)) {
                     itemObj = val;
@@ -1368,13 +1297,11 @@
         if (itemObj) {
             const imgPath = itemObj.image || itemObj.icon || itemObj.sprite || itemObj.img || '';
             if (imgPath) {
-                // Se o caminho for relativo, constrói a URL correta com base no domínio
                 const fullImgUrl = imgPath.startsWith('http') ? imgPath : `https://poke.idleworld.online/${imgPath.startsWith('/') ? imgPath.slice(1) : imgPath}`;
                 return `<img src="${escapeHTML(fullImgUrl)}" style="width:20px; height:20px; vertical-align:middle; margin-right:8px; object-fit:contain;" />`;
             }
         }
 
-        // Fallback visual caso o item não tenha imagem mapeada
         return `<span style="display:inline-flex; align-items:center; justify-content:center; width:20px; height:20px; background:#12202a; border:1px solid #273f52; border-radius:4px; margin-right:8px; font-size:10px; color:#48bb78;">🌿</span>`;
     }
 
@@ -1483,7 +1410,6 @@
         return { sellsFor, numericPrice: priceVal, dropsHTML, experience, expText };
     }
 
-    // --- ESTILOS VISUAIS (ESTÉTICA BOTÂNICA E LIMPA) ---
     const style = document.createElement('style');
     style.id = 'simplifier-dynamic-styles';
     style.innerHTML = `
@@ -1563,9 +1489,6 @@
         nav.game-dock::before, .phud.game-hud-tl::before, .phud.game-hud.t1::before {
             border-radius: 7px !important;
         }
-        /* Janela de Script Mods. Todo o visual das linhas vive aqui: o markup só
-           declara estrutura e classes, sem estilo inline, para não voltar a exigir
-           !important para vencer atributos style. */
         .cfg-window.script-mods-open {
             width: min(920px, 94vw) !important; max-width: 94vw !important;
             height: min(780px, 92vh) !important; max-height: 92vh !important;
@@ -1573,7 +1496,6 @@
         .cfg-window.script-mods-open .cfg-body { min-height: 0; overflow: hidden !important; }
         .cfg-mods-content { width: 100%; height: 100%; min-width: 0; overflow: auto; box-sizing: border-box; }
 
-        /* As seções sempre ocupam a largura toda, então uma coluna simples basta. */
         .cfg-mods-content .script-mods-grid {
             display: flex; flex-direction: column; gap: 12px;
             padding: 14px; background: #0c161f; border-radius: 10px;
@@ -1601,7 +1523,6 @@
         .script-mod-category-grid > .cfg-row.script-mods-wide,
         .script-mod-category-grid > .cfg-row:only-child { grid-column: 1 / -1; }
 
-        /* Linha de liga/desliga: caixa à esquerda, rótulo e descrição à direita. */
         .script-mod-category-grid > label.cfg-row { flex-direction: row; align-items: flex-start; cursor: pointer; }
         .cfg-mods-content .cfg-row input[type="checkbox"] {
             flex: 0 0 auto; width: 18px; height: 18px; margin: 1px 0 0; cursor: pointer; accent-color: #c8a24e;
@@ -1610,13 +1531,10 @@
         .cfg-mods-content .cfg-label b { color: #e2e8f0; font-size: 14px; }
         .cfg-mods-content .cfg-label span { display: block; margin-top: 4px; line-height: 1.35; color: #a0aec0; font-size: 11px; }
 
-        /* Sub-opções agrupadas dentro de uma linha (recursos da hunt, por exemplo). */
         .cfg-mods-sublist { display: flex; flex-direction: column; gap: 2px; }
         .cfg-mods-sublist > label { display: flex; align-items: flex-start; gap: 10px; cursor: pointer; padding: 5px 0; }
         .cfg-mods-sublist .cfg-label b { font-size: 12px; }
 
-        /* margin-top:auto alinha as barras segmentadas na base do cartão, para que
-           descrições de tamanhos diferentes não deixem os botões desencontrados. */
         .script-mod-category-grid .cfg-seg { display: flex; gap: 4px; width: 100%; align-items: stretch; margin-top: auto; }
         .script-mod-category-grid .cfg-seg-btn { min-width: 0; white-space: normal; line-height: 1.2; }
         .script-mod-category-grid .cfg-seg > .cfg-seg-btn { flex: 1; }
@@ -1742,15 +1660,6 @@
         #simple-hunts-container .script-effectiveness.great { color:#9cffb2!important;background:#123d25!important;box-shadow:0 0 9px rgba(72,187,120,.55)!important; }
         #simple-hunts-container .script-effectiveness.neutral { color:#cbd5e0!important;background:#293746!important; }
         #simple-hunts-container .script-effectiveness.bad { color:#ff9b9b!important;background:#481d24!important;box-shadow:0 0 8px rgba(245,101,101,.4)!important; }
-        #check-best-hunt-btn {
-            min-height: 34px; padding: 6px 11px; border-radius: 8px;
-            border: 1px solid #2d6f7d; background: #10303a; color: #75e6f2;
-            font: 700 12px/1.2 inherit; cursor: pointer; white-space: nowrap;
-            transition: background .15s ease, border-color .15s ease, color .15s ease;
-        }
-        #check-best-hunt-btn:hover {
-            background: #174552; border-color: #48c7d8; color: #e8fdff;
-        }
         #simple-hunts-container {
             flex: 1 !important;
             max-height: none !important;
@@ -1817,7 +1726,6 @@
         .sell-confirm-btn.no { background: #2b4c66; color: #e2e8f0; border: 1px solid #273f52; }
         .sell-confirm-btn.no:hover { background: #3182ce; }
 
-        /* Native game window theme for every window created by the extension. */
         .sell-confirm-backdrop, .script-market-backdrop, .portable-ball-backdrop {
             background: rgba(0, 0, 0, .62) !important;
             backdrop-filter: blur(1px);
@@ -1994,7 +1902,6 @@
         .dex-ft-label input { cursor: pointer; }
         .dex-cell.dex-hidden { display: none !important; }
 
-        /* Hunt Analyzer Compact Mode */
         .ha-window.ha-compact {
             width: 320px; min-width: 300px; max-width: 90vw;
             min-height: 360px; max-height: 90vh;
@@ -2021,7 +1928,6 @@
             border-radius: 8px !important;
         }
 
-        /* Hunt Analyzer Custom UI */
         .ha-script-actions { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; margin: 0; padding: 8px; border-bottom: 1px solid #1b3040; }
         .ha-sbtn { background: #1a2d3a; color: #a0aec0; border: 1px solid #273f52; border-radius: 6px; padding: 6px 4px; font-size: 11px; cursor: pointer; transition: all 0.15s ease; text-align: center; font-weight: bold; display: flex; align-items: center; justify-content: center; gap: 4px; }
         .ha-sbtn:hover { background: #3182ce; color: #fff; border-color: #3182ce; }
@@ -2029,7 +1935,6 @@
         .ha-catch-stats.hidden { display: none !important; }
         .ha-rates { flex-wrap: wrap !important; }
 
-        /* Compare Modal */
         .ha-compare-backdrop { position: fixed; inset: 0; z-index: 10100; pointer-events: none; }
         .ha-compare-modal {
             pointer-events: auto; position: fixed !important; left: 50%; top: 50%;
@@ -2086,7 +1991,6 @@
             .ha-compare-table { min-width: 520px !important; }
         }
 
-        /* Inventário não bloqueante e redimensionável */
         .script-inventory-backdrop {
             background: transparent !important; backdrop-filter: none !important;
             pointer-events: none !important;
@@ -2244,8 +2148,6 @@
     function saveCaughtPokemonCache() {
         localStorage.setItem(STORAGE_CAUGHT_POKEMON, JSON.stringify([...globalCaughtPokemonNames]));
     }
-    // A API /api/game/pokedex é a fonte confiável do status "capturado" (por pokeId);
-    // o resultado fica em cache (nomes) para que o filtro/badge do mapa funcionem sem depender da Pokédex estar aberta.
     let caughtPokedexPromise = null;
     function loadCaughtPokedexData(force = false) {
         if (!force && caughtPokedexPromise) return caughtPokedexPromise;
@@ -2395,10 +2297,6 @@
     }
     function getLastHunt() { return localStorage.getItem(STORAGE_LAST_HUNT) || null; }
 
-    // O HUD (.phud-tloc) sabe onde o personagem está mesmo com o mapa fechado e com
-    // o mapa simplificado desligado — os dois casos em que buildSimpleList() nunca
-    // roda e STORAGE_LAST_HUNT ficaria desatualizado. Só grava o que o mapa resolve,
-    // para nunca guardar um nome que teleportToTarget() não conseguiria encontrar.
     function resolveHuntNameFromHud() {
         const location = getCurrentHuntLocation();
         if (!location || isCityName(location)) return null;
@@ -2455,9 +2353,6 @@
         });
     }
 
-    // Devolve true somente quando um marcador da hunt foi realmente clicado. O
-    // auto-reconnect depende dessa distinção para saber se precisa tentar de novo;
-    // `silent` evita encher a tela de avisos durante as retentativas automáticas.
     async function teleportToTarget(huntName, { silent = false } = {}) {
         const notify = (message, options) => { if (!silent) showScriptNotice(message, options); };
         hideDropTooltip();
@@ -2483,11 +2378,8 @@
             return false;
         }
 
-        // Caminho direto confirmado pelo mapa da API: [data-guide="hunt-<slug>"].
         if (clickMappedHunt(huntName)) return true;
 
-        // Compatibilidade com versões do jogo nas quais o marcador da área ainda
-        // não foi montado no DOM.
         let allTabs = getMapAreaTabs(mapWindow);
         if (allTabs.length === 0) {
             const found = await tryFindMarkerAsync(huntName, 20, 100);
@@ -2593,9 +2485,6 @@
         else if (mode === 'last') teleportToLastHunt();
     }
 
-    // O HUD indica a posição atual mesmo quando o mapa está fechado. Um marcador
-    // conhecido ou a interface de batalha confirmam a hunt; outros locais, como o
-    // mapa do Mercado, mantêm Mercado e Depot disponíveis.
     function getSidebarLocation() {
         const location = getCurrentHuntLocation();
         if (location) {
@@ -2796,11 +2685,6 @@
             const dropMode = getDropMode();
             const sellConfirmItems = getSellConfirmItems();
 
-            // Cada linha é montada por um destes construtores e já nasce dentro da sua
-            // categoria. A versão anterior gerava uma lista plana e depois arrastava as
-            // linhas para as seções com closest('.cfg-row'), o que deixava a ordem do
-            // código sem relação com o resultado e jogava num "Outros recursos" tudo o
-            // que alguém esquecesse de listar.
             const toggleRow = ({ className, prefKey, checked, title, description, wide = false }) => `
                 <label class="cfg-row${wide ? ' script-mods-wide' : ''}">
                     <input type="checkbox" class="${className}"${prefKey ? ` data-pref-key="${prefKey}"` : ''}${checked ? ' checked' : ''}>
@@ -3259,13 +3143,12 @@
             const viewMode = mapWindow.dataset.scriptMapView || 'hunts';
             viewTabs.querySelectorAll('[data-view]').forEach(button => button.classList.toggle('on', button.dataset.view === viewMode));
 
-            let customFilterBar = document.getElementById('custom-hunts-filter-bar');
+                        let customFilterBar = document.getElementById('custom-hunts-filter-bar');
             if (!customFilterBar) {
-                const savedFilters = getMapFilters();
                 customFilterBar = document.createElement('div');
                 customFilterBar.id = 'custom-hunts-filter-bar';
                 customFilterBar.style = `
-                    display: grid; grid-template-columns: minmax(175px,1.4fr) minmax(115px,1fr) minmax(145px,1fr) minmax(155px,auto);
+                    display: grid; grid-template-columns: minmax(175px,1.4fr) minmax(115px,1fr) minmax(145px,1fr) minmax(90px,0.7fr) minmax(90px,0.7fr);
                     gap: 8px; margin-top: 8px; margin-bottom: 4px; font-size: 13px;
                 `;
 
@@ -3290,23 +3173,44 @@
                         <option value="locked">Hunts bloqueadas</option>
                         <option value="not_favorites">Não favoritas</option>
                     </select>
-                    <button id="check-best-hunt-btn" type="button" title="Abrir o PIW Tools com os dados do Pokémon principal">🧭 ${tr('bestHunt')}</button>
+                    <input id="filter-hunts-level-min" type="number" min="1" placeholder="Nv mín." title="Nível mínimo" style="background:#0c161f;color:#cbd5e0;border:1px solid #1a2d3a;padding:6px 8px;border-radius:6px;outline:none;font-family:inherit;">
+                    <input id="filter-hunts-level-max" type="number" min="1" placeholder="Nv máx." title="Nível máximo" style="background:#0c161f;color:#cbd5e0;border:1px solid #1a2d3a;padding:6px 8px;border-radius:6px;outline:none;font-family:inherit;">
                 `;
                 mapBody.appendChild(customFilterBar);
 
-                const sortSelect = customFilterBar.querySelector('#sort-hunts-select');
-                const typeSelect = customFilterBar.querySelector('#filter-hunts-type');
-                const accessSelect = customFilterBar.querySelector('#filter-hunts-access');
-                const bestHuntButton = customFilterBar.querySelector('#check-best-hunt-btn');
-                sortSelect.value = savedFilters.sort || '';
-                accessSelect.value = savedFilters.access || 'all';
-                bestHuntButton.addEventListener('click', openBestHuntForLeader);
-                customFilterBar.addEventListener('change', () => {
-                    setMapFilters({ ...getMapFilters(), sort: sortSelect.value, type: typeSelect.value, access: accessSelect.value });
+                const persistFiltersFromBar = () => {
+                    const current = getMapFilters();
+                    setMapFilters({
+                        ...current,
+                        sort: customFilterBar.querySelector('#sort-hunts-select').value,
+                        type: customFilterBar.querySelector('#filter-hunts-type').value,
+                        access: customFilterBar.querySelector('#filter-hunts-access').value,
+                        levelMin: customFilterBar.querySelector('#filter-hunts-level-min').value,
+                        levelMax: customFilterBar.querySelector('#filter-hunts-level-max').value
+                    });
                     lastMapRenderSignature = '';
                     isRendering = false;
                     buildSimpleList();
-                });
+                };
+
+                customFilterBar.addEventListener('change', persistFiltersFromBar);
+                customFilterBar.addEventListener('input', persistFiltersFromBar);
+            }
+
+            // Reaplica os valores salvos em cada build (o typeSelect é repovoado
+            // dinamicamente mais abaixo, então precisa ser reavaliado depois).
+            {
+                const savedFilters = getMapFilters();
+                const sortEl = customFilterBar.querySelector('#sort-hunts-select');
+                const typeEl = customFilterBar.querySelector('#filter-hunts-type');
+                const accessEl = customFilterBar.querySelector('#filter-hunts-access');
+                const levelMinEl = customFilterBar.querySelector('#filter-hunts-level-min');
+                const levelMaxEl = customFilterBar.querySelector('#filter-hunts-level-max');
+                if (sortEl && !sortEl.value && savedFilters.sort) sortEl.value = savedFilters.sort;
+                if (accessEl && savedFilters.access) accessEl.value = savedFilters.access;
+                if (levelMinEl && !levelMinEl.value && savedFilters.levelMin) levelMinEl.value = savedFilters.levelMin;
+                if (levelMaxEl && !levelMaxEl.value && savedFilters.levelMax) levelMaxEl.value = savedFilters.levelMax;
+                // O typeEl é repovoado mais abaixo neste mesmo build — não define aqui.
             }
 
             let captureFilterBar = document.getElementById('custom-hunts-capture-bar');
@@ -3319,20 +3223,38 @@
                 captureFilterBar.innerHTML = `
                     <button class="dex-fbtn" data-captured="yes" type="button" title="Mostrar apenas pokémons já capturados">✓ Capturados</button>
                     <button class="dex-fbtn" data-captured="no" type="button" title="Mostrar apenas pokémons ainda não capturados">✗ Não Capturados</button>
+                    <button class="dex-fbtn script-cl-reset-filters" type="button" title="Limpar todos os filtros do mapa" style="margin-left:auto;color:#feb2b2;border-color:#71313c;">🗑 Limpar filtros</button>
                 `;
                 mapBody.appendChild(captureFilterBar);
 
                 captureFilterBar.dataset.active = savedFilters.captured || '';
-                captureFilterBar.querySelectorAll('.dex-fbtn').forEach(btn => {
+                captureFilterBar.querySelectorAll('.dex-fbtn[data-captured]').forEach(btn => {
                     btn.classList.toggle('on', btn.dataset.captured === captureFilterBar.dataset.active);
                 });
 
-                captureFilterBar.addEventListener('click', (e) => {
-                    const btn = e.target.closest('.dex-fbtn');
+                                captureFilterBar.addEventListener('click', (e) => {
+                    const resetBtn = e.target.closest('.script-cl-reset-filters');
+                    if (resetBtn) {
+                        clearMapFilters();
+                        const nativeSearch = document.querySelector('.map-filter-q');
+                        if (nativeSearch) nativeSearch.value = '';
+                        customFilterBar.querySelector('#sort-hunts-select').value = '';
+                        customFilterBar.querySelector('#filter-hunts-type').value = '';
+                        customFilterBar.querySelector('#filter-hunts-access').value = 'all';
+                        customFilterBar.querySelector('#filter-hunts-level-min').value = '';
+                        customFilterBar.querySelector('#filter-hunts-level-max').value = '';
+                        captureFilterBar.dataset.active = '';
+                        captureFilterBar.querySelectorAll('.dex-fbtn[data-captured]').forEach(b => b.classList.remove('on'));
+                        lastMapRenderSignature = '';
+                        isRendering = false;
+                        buildSimpleList();
+                        return;
+                    }
+                    const btn = e.target.closest('.dex-fbtn[data-captured]');
                     if (!btn) return;
                     const clicked = btn.dataset.captured;
                     captureFilterBar.dataset.active = captureFilterBar.dataset.active === clicked ? '' : clicked;
-                    captureFilterBar.querySelectorAll('.dex-fbtn').forEach(b => {
+                    captureFilterBar.querySelectorAll('.dex-fbtn[data-captured]').forEach(b => {
                         b.classList.toggle('on', b.dataset.captured === captureFilterBar.dataset.active);
                     });
                     setMapFilters({ ...getMapFilters(), captured: captureFilterBar.dataset.active });
@@ -3343,13 +3265,6 @@
             }
             customFilterBar.style.display = viewMode === 'cities' ? 'none' : 'grid';
             captureFilterBar.style.display = viewMode === 'cities' ? 'none' : '';
-            if (openedNow) {
-                customFilterBar.querySelector('#sort-hunts-select').value = '';
-                customFilterBar.querySelector('#filter-hunts-type').value = '';
-                customFilterBar.querySelector('#filter-hunts-access').value = 'all';
-                captureFilterBar.dataset.active = '';
-                captureFilterBar.querySelectorAll('.dex-fbtn').forEach(button => button.classList.remove('on'));
-            }
 
             let simpleContainer = document.getElementById('simple-hunts-container');
             if (!simpleContainer) {
@@ -3364,6 +3279,21 @@
             }
 
             const searchInput = document.querySelector('.map-filter-q');
+            const savedFiltersForSearch = getMapFilters();
+            if (searchInput) {
+                if (!searchInput.dataset.scriptFilterBound) {
+                    searchInput.dataset.scriptFilterBound = 'true';
+                    searchInput.value = savedFiltersForSearch.search || '';
+                    searchInput.addEventListener('input', () => {
+                        setMapFilters({ ...getMapFilters(), search: searchInput.value });
+                        lastMapRenderSignature = '';
+                        isRendering = false;
+                        buildSimpleList();
+                    });
+                } else if (savedFiltersForSearch.search && searchInput.value !== savedFiltersForSearch.search) {
+                    searchInput.value = savedFiltersForSearch.search;
+                }
+            }
             const query = searchInput ? searchInput.value.toLowerCase().trim() : '';
 
             const markers = Array.from(document.querySelectorAll('.hunt-marker'));
@@ -3441,7 +3371,6 @@
                 });
             });
 
-            // As regiões Orre/Outland desmontam os marcadores de Kanto; cidades vêm do catálogo global.
             for (const markerData of new Set(globalHuntMarkerData.values())) {
                 const name = getMarkerName(markerData);
                 if (!name || !isCityMarker(markerData, name)
@@ -3454,7 +3383,6 @@
                 });
             }
 
-            // Favoritos e última hunt podem pertencer a uma região que o jogo desmontou do DOM.
             [...new Set([...favorites, getLastHunt()].filter(Boolean))].forEach(name => {
                 if (huntDataList.some(hunt => getCleanHuntName(hunt.name) === getCleanHuntName(name)) || isCityName(name)) return;
                 const markerData = findMappedHunt(name);
@@ -3481,15 +3409,23 @@
                 );
             }
 
-            const typeSelect = document.getElementById('filter-hunts-type');
-            const savedType = typeSelect?.value || getMapFilters().type || '';
+                        const typeSelect = document.getElementById('filter-hunts-type');
+            const savedType = getMapFilters().type || '';
             const availableTypes = [...new Set(
                 huntDataList.filter(hunt => hunt.canAccess).flatMap(hunt => hunt.defenderTypes)
             )].sort();
             if (typeSelect) {
+                // Preserva o valor selecionado atual (o usuário pode ter acabado de escolher).
+                const currentType = typeSelect.value || savedType;
                 typeSelect.replaceChildren(new Option('Todos os tipos', ''));
                 availableTypes.forEach(type => typeSelect.add(new Option(type.toUpperCase(), type)));
-                typeSelect.value = availableTypes.includes(savedType) ? savedType : '';
+                const finalValue = availableTypes.includes(currentType) ? currentType : '';
+                typeSelect.value = finalValue;
+                // Se o valor salvo não estiver mais disponível, limpa do storage
+                // para evitar um filtro "fantasma".
+                if (savedType && !availableTypes.includes(savedType)) {
+                    setMapFilters({ ...getMapFilters(), type: '' });
+                }
             }
 
             const selectedType = typeSelect?.value || '';
@@ -3511,6 +3447,16 @@
                 huntDataList = huntDataList.filter(hunt => !hunt.canAccess);
             } else if (accessFilter === 'not_favorites') {
                 huntDataList = huntDataList.filter(hunt => !favorites.includes(hunt.name));
+            }
+
+            const savedLevelFilters = getMapFilters();
+            const minLevel = savedLevelFilters.levelMin === '' ? null : Number(savedLevelFilters.levelMin);
+            const maxLevel = savedLevelFilters.levelMax === '' ? null : Number(savedLevelFilters.levelMax);
+            if (minLevel !== null && Number.isFinite(minLevel)) {
+                huntDataList = huntDataList.filter(hunt => hunt.city || hunt.requiredLevel >= minLevel);
+            }
+            if (maxLevel !== null && Number.isFinite(maxLevel)) {
+                huntDataList = huntDataList.filter(hunt => hunt.city || hunt.requiredLevel <= maxLevel);
             }
 
             const capturedFilter = document.getElementById('custom-hunts-capture-bar')?.dataset.active || '';
@@ -6000,7 +5946,6 @@
         injectMarkQualityMultiSelect(mkWindow);
         injectMarkSettingsButton(mkWindow);
 
-        // A proteção/lock de itens agora é nativa do jogo; não duplicar controles no Mark.
         const isSellTab = !!Array.from(mkWindow.querySelectorAll('.mk-tab'))
             .find(t => t.classList.contains('on') && /\b(?:Sell|Vender)\b/i.test(t.textContent));
         if (isSellTab) {
@@ -6013,7 +5958,6 @@
                     || /🔒|unlock|destravar|desbloquear/i.test(lockText);
                 setNativeItemLock(itemName, locked);
             });
-            // Intercept Sell CTA via event delegation on the sellbar
             const sellBar = mkWindow.querySelector('.mk-sellbar');
             if (sellBar && !sellBar.dataset.sellIntercepted) {
                 let sellConfirmed = false;
@@ -6021,7 +5965,6 @@
                     const sellBtn = e.target.closest('button.mk-sell');
                     if (!sellBtn || sellBtn.disabled) return;
 
-                    // If we already confirmed, let it through
                     if (sellConfirmed) {
                         sellConfirmed = false;
                         return;
@@ -6050,7 +5993,7 @@
                             }
                         });
                     }
-                }, true); // capture phase – runs before React's handler
+                }, true);
                 sellBar.dataset.sellIntercepted = 'true';
             }
         }
@@ -6101,8 +6044,6 @@
 
         const ftEnabled = isDexFastTravelActive();
 
-        // A API de marcadores é a fonte confiável para saber quais criaturas
-        // possuem hunt. O catálogo de criaturas permanece como fallback.
         const huntableNames = new Set();
         if (globalHuntMarkerData.size > 0) {
             for (const marker of new Set(globalHuntMarkerData.values())) {
@@ -6117,14 +6058,12 @@
             }
         }
 
-        // Mark cells that have no hunt with a red X badge
         grid.querySelectorAll('.dex-cell').forEach(cell => {
             if (cell.querySelector('.dex-no-hunt-badge')) return;
             const nameEl = cell.querySelector('.dex-cell-name');
             if (!nameEl) return;
             const pokeName = nameEl.textContent.trim().toLowerCase();
             const hasData = globalCreatureApiData.has(pokeName);
-            // Only mark if we have loaded data and the pokemon has no hunt
             if (hasData && huntableNames.size > 0 && !huntableNames.has(pokeName)) {
                 const badge = document.createElement('span');
                 badge.className = 'dex-no-hunt-badge';
@@ -6138,14 +6077,12 @@
 
         const bar = document.createElement('div');
         bar.className = 'dex-script-controls';
-        // Filtros e ordenação já são fornecidos pela Pokédex nativa.
         bar.innerHTML = ftEnabled ? '<label class="dex-ft-label"><input type="checkbox" class="dex-ft-check"> ⚡ Fast Travel</label>' : '';
         dexControls.after(bar);
 
         const filterBtns = bar.querySelectorAll('.dex-fbtn[data-filter]');
         const sortBtn = bar.querySelector('.dex-fbtn[data-filter="sort-value"]');
 
-        // Restore persisted state
         let currentFilter = 'all';
         let sortedByValue = false;
         let originalOrder = null;
@@ -6204,10 +6141,8 @@
             }
         }
 
-        // Apply persisted sort
         if (sortedByValue) sortByValue();
 
-        // Apply persisted filter and update button states
         filterBtns.forEach(b => b.classList.remove('on'));
         const activeBtn = bar.querySelector(`.dex-fbtn[data-filter="${currentFilter}"]`);
         if (activeBtn) activeBtn.classList.add('on');
@@ -6248,7 +6183,6 @@
             });
         });
 
-        // Fast Travel: intercept clicks on dex-cell
         const ftCheck = bar.querySelector('.dex-ft-check');
         if (ftCheck && !grid.dataset.fastTravelIntercepted) {
             grid.addEventListener('click', (e) => {
@@ -6305,9 +6239,6 @@
         return new Intl.NumberFormat('pt-BR').format(num);
     }
 
-    // A qualidade é o multiplicador numérico oficial retornado pelo jogo.
-    // As faixas e cores seguem a apresentação do JustPokédex para que o valor
-    // seja legível sem perder a precisão do multiplicador.
     function getPokemonQualityInfo(multiplier) {
         const value = Number(multiplier);
         if (!Number.isFinite(value)) return null;
@@ -6350,9 +6281,6 @@
         return ivText ? Number(ivText.replace(',', '.')) : null;
     }
 
-    // Capturas selvagens normais têm teto ×1.8 (rolagem nunca passa disso); só
-    // shiny e Pokémon de breeding alcançam Mítica/Anciã/Divina (×2.0 a ×4.0).
-    // Uma qualidade acima de 1.8 já prova por si só que não veio de captura normal.
     const WILD_QUALITY_CEILING = 1.8;
     const SPECIAL_QUALITY_CEILING = 4.0;
     function getPokemonQualityCeiling(multiplier, isShiny) {
@@ -6360,12 +6288,6 @@
         return (isShiny || quality > WILD_QUALITY_CEILING) ? SPECIAL_QUALITY_CEILING : WILD_QUALITY_CEILING;
     }
 
-    // Índice de potencial: Quality pesa mais que IV (75/25), já que segundo a
-    // pokepédia oficial (/pokepedia/systems/power) Quality entra duas vezes na
-    // fórmula real de power (expoente por stat + multiplicador final), enquanto
-    // o IV só soma linearmente dentro de cada stat e é dominado pelo base stat.
-    // 0% = 0 IV e ×0.80; 100% = 192 IV e no teto de qualidade do Pokémon
-    // (×1.8 para captura selvagem normal, ×4.0 para shiny/breeding).
     const POTENTIAL_QUALITY_WEIGHT = 0.75;
     function getPokemonPotentialPercent(multiplier, ivTotal, isShiny = false) {
         if (!preferenceEnabled(STORAGE_SHOW_QUALITY_POTENTIAL)) return null;
@@ -6432,11 +6354,6 @@
         });
     }
 
-    // O re-render forcado por um `visibilitychange` sintetico obrigava o jogo a
-    // remontar a cena inteira a cada 4 segundos enquanto o Hunt Analyzer estivesse
-    // aberto, e era isso que deixava a tela travando e "sincronizando". O proprio
-    // analisador ja se atualiza sozinho, entao a funcao virou no-op: as chamadas
-    // existentes continuam validas e nao custam nada.
     function refreshHuntAnalyzerGameRender() {}
 
     function showCompareModal() {
@@ -6518,7 +6435,6 @@
             backdrop.querySelector('.ha-history-list').innerHTML = '<span style="color:#718096;font-size:12px;">Nenhuma sessão concluída ainda.</span>';
         });
 
-        // Arraste por ponteiro: funciona com mouse e telas sensíveis ao toque.
         let isDragging = false, startX = 0, startY = 0, initialLeft = 0, initialTop = 0;
         const modal = backdrop.querySelector('.ha-compare-modal');
         const titleBar = modal.querySelector('.ha-title');
@@ -6560,9 +6476,6 @@
     function trackHuntAnalyzer() {
         const haWindow = document.querySelector('.ha-window:not(.ha-compare-modal)');
         if (!haWindow) return;
-        // O observer dispara a cada 150ms durante a hunt. Reler e reescrever o
-        // analisador nessa frequencia é o que pesava na janela; uma vez por segundo
-        // é suficiente para os contadores e o "ultimo catch".
         if (Date.now() - lastHuntAnalyzerTrackAt < HUNT_ANALYZER_TRACK_INTERVAL_MS) return;
         lastHuntAnalyzerTrackAt = Date.now();
 
@@ -6667,13 +6580,11 @@
         const oldToggle = haWindow.querySelector('.ha-title .ha-btn-toggle-view');
         if (oldToggle) oldToggle.remove();
 
-        // Apply persisted compact state on first injection
         if (!haWindow.dataset.haInitialized) {
             if (isHaCompact()) haWindow.classList.add('ha-compact');
             haWindow.dataset.haInitialized = 'true';
         }
 
-        // Apply persisted drops visibility
         const drops = haWindow.querySelector('.ha-drops');
         if (drops && !haWindow.dataset.haDropsInit) {
             if (isHaDropsVisible()) drops.classList.add('show-drops');
@@ -6721,7 +6632,6 @@
         }
         if (!preferenceEnabled(STORAGE_COMPARE_WINDOW)) actionArea.querySelector('.btn-compare')?.remove();
 
-        // O título nativo fica sempre no topo e as ações imediatamente abaixo.
         const haTitle = haWindow.querySelector(':scope > .ha-title, :scope > h3, :scope > .ha-head, :scope > .ha-header')
             || haWindow.querySelector('.ha-title, h3, .ha-head, .ha-header');
         if (haTitle) {
@@ -6759,9 +6669,6 @@
     function findCaptureLogWindow() {
         const nativeWindow = document.querySelector('.clog-window');
         if (nativeWindow) return nativeWindow;
-        // Sem nenhuma .clog-row no documento nao ha o que anotar, e a busca por texto
-        // abaixo percorre todos os nos do body. Rodava a cada tick do observer so para
-        // nao encontrar nada, porque a janela de capturas fica fechada quase sempre.
         if (!document.querySelector('.clog-row')) return null;
         const titlePattern = /(?:log\s*de\s*capturas|capture\s*log)/i;
         const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
@@ -6826,12 +6733,6 @@
         return captureLogEnhancementPromise;
     }
 
-    // Janela nativa "Mercado Global" do jogo (diferente da versão portátil que
-    // este script cria): cada linha é .mkt2-trow.clickable, e a célula
-    // .mkt2-tc--meta guarda nível, IV e um span com "color:" inline contendo
-    // "<Tier> ×<qualidade>". Recalcula a cada tick em vez de marcar linhas
-    // como "já processadas", pois o jogo pode reciclar essas linhas ao trocar
-    // de página/ordenação.
     function enhanceNativeGlobalMarketQuality() {
         const metaCells = document.querySelectorAll('.mkt2-trow.clickable .mkt2-tc--meta');
         if (!metaCells.length) return;
@@ -6842,9 +6743,6 @@
         metaCells.forEach(meta => {
             const qualitySpan = meta.querySelector('span[style*="color"]');
             const oldBadge = qualitySpan?.querySelector('.script-gm-potential');
-            // Lê só os nós de texto originais do jogo — ignora nossa própria badge,
-            // que senão entraria no textContent e quebraria o regex (terminaria em
-            // ")" em vez de dígito), causando remove→recria em loop a cada tick.
             const rawQualityText = qualitySpan
                 ? Array.from(qualitySpan.childNodes).filter(node => node.nodeType === Node.TEXT_NODE).map(node => node.textContent).join('')
                 : '';
@@ -6862,8 +6760,6 @@
                 if (oldBadge.textContent !== badgeText) oldBadge.textContent = badgeText;
                 return;
             }
-            // Usa a cor exata que o próprio jogo aplicou ao tier (qualitySpan.style.color)
-            // em vez do nosso mapeamento interno — assim a badge sempre bate com a cor real.
             const badge = document.createElement('span');
             badge.className = 'script-gm-potential';
             badge.style.cssText = `font-weight:800;color:${qualitySpan.style.color};`;
@@ -6872,9 +6768,6 @@
         });
     }
 
-    // --- BOTAO "IR PARA A HUNT" NAS QUESTS/TASKS ---
-    // A janela de Quests nao tem uma classe propria conhecida, entao ela e achada
-    // pelo titulo, do mesmo jeito que findCaptureLogWindow() acha o log de capturas.
     function findQuestsWindow() {
         const titlePattern = /quests?\s*&?\s*tasks?|tasks?\s*&?\s*dailys?/i;
         const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
@@ -6897,8 +6790,6 @@
         return null;
     }
 
-    // Pega o elemento MAIS INTERNO que contem "Derrotar/Capturar" + progresso "N/N",
-    // para nao tratar o container da janela inteira como se fosse uma unica linha.
     function getQuestTaskRows(questsWindow) {
         return Array.from(questsWindow.querySelectorAll('*')).filter(element => {
             const text = element.textContent || '';
@@ -6910,8 +6801,6 @@
         });
     }
 
-    // O nome do Pokemon e o unico texto "puro" da linha que nao e rotulo de acao,
-    // tipo ou progresso — e que o catalogo do jogo reconhece como criatura.
     function getQuestPokemonName(row) {
         const leaves = Array.from(row.querySelectorAll('*')).filter(element => !element.children.length);
         for (const element of leaves) {
@@ -6984,6 +6873,5 @@
     } else {
         initializeDOMEnhancements();
     }
-
 
 })();

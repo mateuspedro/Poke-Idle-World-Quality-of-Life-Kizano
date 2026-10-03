@@ -1,17 +1,17 @@
 // ==UserScript==
 // @name         Poke Idle World - Quality of Life (PIW-QOL) - KizaniN
 // @namespace    http://tampermonkey.net/
-// @version      10.4.5
+// @version      10.4.6
 // @description  Mercado e Depot fora das hunts, retorno rápido à cidade, buscas de itens e auto-reconnect resiliente.
 // @author       Desjunior (JulianoCLI)
 // @updater      KizaniN
 // @match        https://poke.idleworld.online/play*
 // @grant        none
 // @run-at       document-start
-// @homepageURL  https://github.com/mateuspedro/Poke-Idle-World---Quality-of-Life-PIW-QOL---Kizano
-// @supportURL   https://github.com/mateuspedro/Poke-Idle-World---Quality-of-Life-PIW-QOL---Kizano/issues
-// @updateURL    https://raw.githubusercontent.com/mateuspedro/Poke-Idle-World---Quality-of-Life-PIW-QOL---Kizano/main/qql.user.js
-// @downloadURL  https://raw.githubusercontent.com/mateuspedro/Poke-Idle-World---Quality-of-Life-PIW-QOL---Kizano/main/qql.user.js
+// @homepageURL  https://github.com/mateuspedro/Poke-Idle-World-Quality-of-Life-Kizano
+// @supportURL   https://github.com/mateuspedro/Poke-Idle-World-Quality-of-Life-Kizano/issues
+// @updateURL    https://raw.githubusercontent.com/mateuspedro/Poke-Idle-World-Quality-of-Life-Kizano/main/qql.user.js
+// @downloadURL  https://raw.githubusercontent.com/mateuspedro/Poke-Idle-World-Quality-of-Life-Kizano/main/qql.user.js
 // ==/UserScript==
 
 (function() {
@@ -65,15 +65,19 @@
         resetAutoReconnectFailures();
         if (!bossMaxLogged) cancelScheduledAutoReconnectReload();
     }
-function handleCapturedPokemon(message) {
+    function handleCapturedPokemon(message) {
         // A mensagem de captura pode vir com o nome direto ou dentro de um objeto poke.
-        const name = message?.name
+        const name = message?.speciesName
+            || message?.name
             || message?.pokemonName
             || message?.poke?.name
             || message?.pokemon?.name
             || '';
         const cleanName = getCleanHuntName(name);
         if (!cleanName) return;
+
+        // Só considera captura bem-sucedida (a mensagem também chega em falhas).
+        if (message?.success === false) return;
 
         // Se não estava no cache, adiciona e invalida o render do mapa
         // para que o badge de captura apareça imediatamente.

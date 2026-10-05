@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Poke Idle World - Quality of Life (PIW-QOL) - KizaniN
 // @namespace    http://tampermonkey.net/
-// @version      10.5.1
+// @version      10.6.1
 // @description  Mercado e Depot fora das hunts, retorno rápido à cidade, buscas de itens e auto-reconnect resiliente.
 // @author       Desjunior (JulianoCLI)
 // @updater      KizaniN
@@ -37,6 +37,9 @@
     let nextAutoReconnectAt = 0;
     let lastAnalyzerXp = null;
     let lastAnalyzerXpChangeAt = Date.now();
+    let itemLockCache = new Set();
+    let pokemonLockCache = new Set();
+    let locksLoaded = false;
     const GAME_SOCKET_MESSAGE_TYPES = new Set(['inventory', 'family', 'pokes', 'pokes-get']);
 
     function isInHuntContext() {
@@ -65,6 +68,49 @@
         resetAutoReconnectFailures();
         if (!bossMaxLogged) cancelScheduledAutoReconnectReload();
     }
+
+async function loadNativeLocks() {
+    if (locksLoaded) return;
+    try {
+        const data = await gameApiRequest('/api/game/item/lock');
+        itemLockCache = new Set((data?.locked || []).map(String));
+        locksLoaded = true;
+    } catch (error) {
+        console.warn('Falha ao carregar cadeados nativos:', error);
+    }
+}
+
+function isItemLocked(itemId) {
+    return itemLockCache.has(String(itemId));
+}
+
+function setItemLocked(itemId, locked) {
+    const id = String(itemId);
+    if (locked) itemLockCache.add(id);
+    else itemLockCache.delete(id);
+}
+
+async function toggleNativeItemLock(itemId, locked) {
+    const result = await gameApiRequest('/api/game/item/lock', {
+        method: 'POST',
+        body: JSON.stringify({ itemId: Number(itemId), locked })
+    });
+    setItemLocked(itemId, locked);
+    return result;
+}
+
+async function toggleNativePokemonLock(pokemonId, locked) {
+    const result = await gameApiRequest('/api/game/pokemon/lock', {
+        method: 'POST',
+        body: JSON.stringify({ id: pokemonId, locked })
+    });
+    if (result?.ok) {
+        if (locked) pokemonLockCache.add(String(pokemonId));
+        else pokemonLockCache.delete(String(pokemonId));
+    }
+    return result;
+}
+
     function handleCapturedPokemon(message) {
         const name = message?.speciesName
             || message?.name
@@ -896,9 +942,12 @@
         entry.locked = nextLocked;
         return nextLocked;
     }
-    function isNativeLocked(entry) {
-        return Boolean(entry?.locked ?? entry?.isLocked ?? entry?.protected ?? entry?.sellLocked);
-    }
+function isNativeLocked(entry) {
+    if (entry?.locked ?? entry?.isLocked ?? entry?.protected ?? entry?.sellLocked) return true;
+    const id = entry?.id ?? entry?.itemId ?? entry?.capturedId;
+    if (id == null) return false;
+    return itemLockCache.has(String(id)) || pokemonLockCache.has(String(id));
+}
 
     async function getCompleteLeaderPokemon() {
         let pokemonList = await requestPokemonTeamFromGameContext();
@@ -1412,6 +1461,7 @@
 
     const style = document.createElement('style');
     style.id = 'simplifier-dynamic-styles';
+
     style.innerHTML = `
         :root { --piw-game-font: Barlow, "Barlow Fallback", system-ui, sans-serif; }
         html.script-unified-fonts,
@@ -1434,6 +1484,9 @@
         }
         html.script-custom-scrollbars *::-webkit-scrollbar-thumb:hover { background: rgba(230, 205, 142, .58); background-clip: padding-box; }
         .promo-overlay { display: none !important; }
+#script-sidebar:not([data-location="city"]) #dock-btn-sell {
+    display: none !important;
+}
         #script-sidebar {
             position: fixed; left: 8px; top: 50%; transform: translateY(-50%);
             display: flex; flex-direction: column; align-items: center; gap: 6px;
@@ -1458,6 +1511,7 @@
         #dock-btn-quick-tp:hover, #dock-btn-shops:hover, #dock-btn-depot:hover, #dock-btn-city:hover {
             background: rgba(255,255,255,.12);
         }
+
         #dock-btn-quick-tp[hidden] { display: none !important; }
         #script-sidebar[data-location="hunt"] #dock-btn-quick-tp[hidden],
         #script-sidebar[data-location="unknown"] #dock-btn-quick-tp[hidden] { display: inline-flex !important; }
@@ -1465,6 +1519,7 @@
         #dock-btn-shops { color: #9ae6b4; font-size: 15px; }
         #dock-btn-depot { color: #90cdf4; font-size: 15px; }
         #dock-btn-city { font-size: 20px; line-height: 1; }
+#dock-btn-sell { color: #f6c453; font-size: 15px; }
         .script-sidebar-wrap { position: relative; display: flex; align-items: center; }
         .script-sidebar-wrap .poke-menu[hidden] { display: none !important; }
         .script-sidebar-wrap .poke-menu {
@@ -2043,6 +2098,358 @@
             vertical-align: middle !important;
             white-space: nowrap !important;
         }
+/* ===== PIW Shop Unified ===== */
+.piw-shop-backdrop {
+    position: fixed; inset: 0; z-index: 10060;
+    display: flex; align-items: center; justify-content: center;
+    padding: 16px;
+    background: radial-gradient(ellipse at center, rgba(8,14,22,.85), rgba(0,0,0,.92));
+    backdrop-filter: blur(3px);
+    font-family: var(--piw-game-font);
+    animation: piwFadeIn .15s ease;
+}
+@keyframes piwFadeIn { from { opacity: 0; } to { opacity: 1; } }
+
+.piw-shop-window {
+    width: min(880px, 96vw);
+    max-height: 90vh;
+    display: flex; flex-direction: column;
+    background: linear-gradient(180deg, #0f1a24 0%, #0a1219 100%);
+    border: 1px solid rgba(200,170,110,.35);
+    border-radius: 14px;
+    box-shadow: 0 24px 70px rgba(0,0,0,.85), inset 0 1px 0 rgba(255,255,255,.04);
+    overflow: hidden;
+    color: #e8e2d0;
+}
+
+.piw-shop-header {
+    display: flex; align-items: center; gap: 14px;
+    padding: 14px 18px;
+    background: linear-gradient(180deg, rgba(200,170,110,.10), transparent);
+    border-bottom: 1px solid rgba(200,170,110,.18);
+}
+.piw-shop-title { display: flex; align-items: center; gap: 12px; flex: 1; min-width: 0; }
+.piw-shop-icon {
+    width: 42px; height: 42px; flex: none;
+    display: grid; place-items: center;
+    font-size: 22px;
+    background: rgba(200,170,110,.10);
+    border: 1px solid rgba(200,170,110,.25);
+    border-radius: 10px;
+}
+.piw-shop-title h2 { margin: 0; font-size: 16px; font-weight: 700; color: #f4ead0; }
+.piw-shop-title small { display: block; margin-top: 2px; font-size: 11px; color: #8fa0b0; }
+
+.piw-shop-balance {
+    display: flex; flex-direction: column; align-items: flex-end;
+    padding: 6px 12px;
+    background: rgba(200,170,110,.08);
+    border: 1px solid rgba(200,170,110,.20);
+    border-radius: 9px;
+}
+.piw-balance-label { font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: #8fa0b0; }
+.piw-balance-value { font-size: 15px; color: #f0cd7d; font-weight: 800; }
+
+.piw-shop-close {
+    width: 34px; height: 34px; flex: none;
+    background: rgba(255,255,255,.04);
+    border: 1px solid rgba(255,255,255,.10);
+    border-radius: 8px;
+    color: #cbd5e0; font-size: 20px; line-height: 1;
+    cursor: pointer; transition: all .15s;
+}
+.piw-shop-close:hover { background: rgba(245,101,101,.15); color: #fff; border-color: rgba(245,101,101,.4); }
+
+/* Tabs */
+.piw-shop-tabs {
+    display: flex; gap: 4px; padding: 10px 18px 0;
+    border-bottom: 1px solid rgba(200,170,110,.12);
+}
+.piw-shop-tab {
+    display: inline-flex; align-items: center; gap: 7px;
+    padding: 10px 16px;
+    background: transparent; color: #8fa0b0;
+    border: 1px solid transparent;
+    border-bottom: 2px solid transparent;
+    border-radius: 8px 8px 0 0;
+    font-size: 13px; font-weight: 700; cursor: pointer;
+    transition: all .15s;
+}
+.piw-shop-tab:hover { color: #d6c8a3; background: rgba(200,170,110,.06); }
+.piw-shop-tab.on {
+    color: #f0cd7d;
+    background: rgba(200,170,110,.08);
+    border-bottom-color: #c8a24e;
+}
+
+.piw-shop-body { flex: 1; min-height: 0; overflow: auto; padding: 0; }
+.piw-tab-panel { padding: 16px 18px; }
+.piw-tab-panel[hidden] { display: none !important; }
+
+.piw-shop-loading, .piw-shop-empty {
+    text-align: center; padding: 40px 20px;
+    color: #7a8a99; font-size: 13px;
+}
+
+/* Grupos (Poké Bolas, Poções) */
+.piw-shop-group { margin-bottom: 20px; }
+.piw-shop-group:last-child { margin-bottom: 0; }
+.piw-shop-group-title {
+    margin: 0 0 10px;
+    padding: 6px 0 8px;
+    font-size: 13px; font-weight: 700;
+    color: #d9c38c;
+    letter-spacing: .3px;
+    border-bottom: 1px solid rgba(200,170,110,.20);
+}
+
+.piw-shop-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 10px;
+}
+
+/* Cards de compra */
+.piw-shop-card {
+    display: grid;
+    grid-template-columns: 52px 1fr;
+    grid-template-rows: auto auto;
+    gap: 10px 12px;
+    padding: 12px;
+    background: rgba(255,255,255,.025);
+    border: 1px solid rgba(255,255,255,.06);
+    border-radius: 10px;
+    transition: border-color .15s, background .15s;
+}
+.piw-shop-card:hover {
+    background: rgba(200,170,110,.05);
+    border-color: rgba(200,170,110,.25);
+}
+.piw-card-icon {
+    grid-row: 1 / 3;
+    width: 52px; height: 52px;
+    display: grid; place-items: center;
+    background: rgba(0,0,0,.25);
+    border-radius: 9px;
+}
+.piw-card-icon img { width: 42px; height: 42px; object-fit: contain; image-rendering: pixelated; }
+.piw-card-info h3 { margin: 0 0 4px; font-size: 14px; color: #f0ead8; font-weight: 700; }
+.piw-card-meta { display: flex; gap: 8px; flex-wrap: wrap; font-size: 11px; color: #8fa0b0; }
+.piw-card-owned { color: #63b3ed; }
+.piw-card-rate { color: #f6c453; }
+.piw-card-price { margin-top: 5px; font-size: 13px; font-weight: 800; color: #f0cd7d; }
+.piw-card-actions {
+    grid-column: 1 / -1;
+    display: flex; gap: 5px; flex-wrap: wrap;
+    padding-top: 8px;
+    border-top: 1px solid rgba(255,255,255,.05);
+}
+.piw-buy-btn {
+    flex: 1; min-width: 52px;
+    padding: 7px 6px;
+    background: rgba(200,170,110,.08);
+    color: #e8e2d0;
+    border: 1px solid rgba(200,170,110,.22);
+    border-radius: 6px;
+    font-size: 11px; font-weight: 700;
+    cursor: pointer; transition: all .12s;
+}
+.piw-buy-btn:hover:not(:disabled) {
+    background: linear-gradient(180deg, #e6cd8e, #c8a24e);
+    color: #1a1206;
+    border-color: #6a5223;
+    transform: translateY(-1px);
+}
+.piw-buy-btn:disabled { opacity: .45; cursor: wait; }
+
+/* Filter bar (venda) */
+.piw-filter-bar {
+    display: flex; flex-wrap: wrap; gap: 10px;
+    padding: 12px 18px;
+    background: rgba(0,0,0,.18);
+    border-bottom: 1px solid rgba(200,170,110,.12);
+    align-items: center;
+}
+.piw-filter-search {
+    display: flex; align-items: center; gap: 6px;
+    flex: 1; min-width: 180px;
+    padding: 6px 10px;
+    background: rgba(0,0,0,.35);
+    border: 1px solid rgba(255,255,255,.08);
+    border-radius: 7px;
+}
+.piw-filter-search input {
+    flex: 1; min-width: 0;
+    background: transparent; border: 0; outline: 0;
+    color: #e8e2d0; font: inherit; font-size: 13px;
+}
+.piw-filter-iv {
+    display: flex; align-items: center; gap: 6px;
+    font-size: 12px; color: #8fa0b0;
+}
+.piw-filter-iv input {
+    width: 62px;
+    padding: 6px 8px;
+    background: rgba(0,0,0,.35);
+    border: 1px solid rgba(255,255,255,.08);
+    border-radius: 6px;
+    color: #e8e2d0; font: inherit; font-size: 12px;
+    outline: 0;
+}
+.piw-filter-iv input:focus { border-color: rgba(200,170,110,.45); }
+.piw-filter-quality { display: flex; flex-wrap: wrap; gap: 4px; }
+.piw-quality-btn {
+    padding: 5px 9px;
+    background: transparent;
+    color: #6b7a88;
+    border: 1px solid rgba(255,255,255,.08);
+    border-radius: 5px;
+    font-size: 10.5px; font-weight: 700;
+    cursor: pointer; transition: all .12s;
+    opacity: .55;
+}
+.piw-quality-btn.on { opacity: 1; color: #e8e2d0; border-color: rgba(200,170,110,.35); background: rgba(200,170,110,.10); }
+.piw-filter-actions { display: flex; gap: 6px; margin-left: auto; }
+.piw-filter-actions button {
+    padding: 6px 11px;
+    background: transparent; color: #cbd5e0;
+    border: 1px solid rgba(255,255,255,.10);
+    border-radius: 6px; font-size: 11px; font-weight: 700;
+    cursor: pointer; transition: all .12s;
+}
+.piw-filter-actions button:hover { border-color: rgba(200,170,110,.4); color: #f0cd7d; background: rgba(200,170,110,.07); }
+
+/* Lista de venda */
+.piw-sell-list,
+.piw-sell-items-list { display: flex; flex-direction: column; gap: 6px; }
+
+.piw-sell-row {
+    display: grid;
+    grid-template-columns: 22px 44px 1fr auto 36px;
+    align-items: center;
+    gap: 12px;
+    padding: 9px 12px;
+    background: rgba(255,255,255,.025);
+    border: 1px solid rgba(255,255,255,.05);
+    border-radius: 9px;
+    cursor: pointer;
+    transition: all .12s;
+}
+.piw-sell-row:hover { background: rgba(200,170,110,.05); border-color: rgba(200,170,110,.20); }
+.piw-sell-row.is-locked { opacity: .55; }
+.piw-sell-row[hidden] { display: none !important; }
+
+.piw-sell-row--item {
+    grid-template-columns: 22px 44px 1fr 90px 36px;
+}
+
+.piw-sell-check {
+    width: 18px; height: 18px;
+    accent-color: #c8a24e; cursor: pointer;
+    margin: 0;
+}
+.piw-sell-check:disabled { cursor: not-allowed; }
+
+.piw-sell-icon {
+    width: 44px; height: 44px;
+    display: grid; place-items: center;
+    background: rgba(0,0,0,.30);
+    border-radius: 8px;
+}
+.piw-sell-icon img { width: 36px; height: 36px; object-fit: contain; image-rendering: pixelated; }
+
+.piw-sell-info { min-width: 0; }
+.piw-sell-name {
+    display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+    font-size: 13px; font-weight: 700; color: #f0ead8;
+}
+.piw-tag {
+    font-size: 9.5px; font-weight: 800;
+    padding: 2px 5px; border-radius: 4px;
+    text-transform: uppercase; letter-spacing: .3px;
+}
+.piw-tag--shiny { background: linear-gradient(90deg,#f6c453,#f0a020); color: #2a1a00; }
+.piw-tag--locked { background: rgba(245,101,101,.15); color: #feb2b2; border: 1px solid rgba(245,101,101,.3); }
+.piw-sell-meta {
+    display: flex; gap: 10px; flex-wrap: wrap;
+    margin-top: 3px;
+    font-size: 11px; color: #8fa0b0;
+}
+.piw-sell-meta .piw-quality-label { font-weight: 800; }
+.piw-sell-potential { color: #63b3ed; font-weight: 700; }
+.piw-sell-price { font-size: 13px; font-weight: 800; color: #f0cd7d; white-space: nowrap; }
+
+.piw-sell-qty {
+    width: 90px; box-sizing: border-box;
+    padding: 6px 8px;
+    background: rgba(0,0,0,.35);
+    color: #e8e2d0;
+    border: 1px solid rgba(255,255,255,.10);
+    border-radius: 6px;
+    font: inherit; font-size: 12px;
+    text-align: center;
+}
+.piw-sell-qty:disabled { opacity: .45; }
+
+.piw-sell-lock {
+    width: 32px; height: 32px;
+    display: grid; place-items: center;
+    background: rgba(255,255,255,.04);
+    border: 1px solid rgba(255,255,255,.10);
+    border-radius: 7px;
+    font-size: 15px; cursor: pointer;
+    transition: all .12s;
+}
+.piw-sell-lock:hover { background: rgba(200,170,110,.12); border-color: rgba(200,170,110,.35); }
+.piw-sell-lock.is-locked { background: rgba(245,101,101,.12); border-color: rgba(245,101,101,.35); }
+
+/* Footer */
+.piw-shop-footer {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 18px;
+    border-top: 1px solid rgba(200,170,110,.15);
+    background: rgba(0,0,0,.20);
+    font-size: 12px; color: #cbd5e0;
+}
+.piw-sell-summary { font-weight: 600; }
+.piw-sell-actions { display: flex; gap: 8px; }
+
+.piw-btn {
+    padding: 9px 18px;
+    border-radius: 8px;
+    font-size: 12px; font-weight: 800;
+    cursor: pointer; transition: all .12s;
+    border: 1px solid transparent;
+}
+.piw-btn--ghost { background: transparent; color: #cbd5e0; border-color: rgba(255,255,255,.12); }
+.piw-btn--ghost:hover { background: rgba(255,255,255,.05); }
+.piw-btn--gold {
+    background: linear-gradient(180deg, #e6cd8e, #c8a24e);
+    color: #1a1206; border-color: #6a5223;
+}
+.piw-btn--gold:hover:not(:disabled) { filter: brightness(1.08); transform: translateY(-1px); }
+.piw-btn--gold:disabled { opacity: .45; cursor: not-allowed; }
+
+/* Sidebar: botão de venda */
+#dock-btn-sell { color: #f6c453; font-size: 15px; }
+
+@media (max-width: 640px) {
+    .piw-filter-bar { flex-direction: column; align-items: stretch; }
+    .piw-filter-actions { margin-left: 0; }
+    .piw-sell-row { grid-template-columns: 22px 40px 1fr 36px; }
+    .piw-sell-row--item { grid-template-columns: 22px 40px 1fr 70px 36px; }
+    .piw-sell-price { grid-column: 3 / 4; grid-row: 2; font-size: 11px; }
+}
+/* Botão "Marcar todos" no footer */
+.piw-mark-all {
+    border-color: rgba(200,170,110,.30) !important;
+    color: #e8e2d0 !important;
+}
+.piw-mark-all:hover {
+    background: rgba(200,170,110,.12) !important;
+    border-color: rgba(200,170,110,.50) !important;
+    color: #f0cd7d !important;
+}
     `;
     function appendStyleWhenReady(styleElement) {
         if (document.head) document.head.appendChild(styleElement);
@@ -2504,13 +2911,16 @@
         if (!sidebar) return;
         const location = getSidebarLocation();
         if (sidebar.dataset.location !== location) {
-            sidebar.dataset.location = location;
-            if (location === 'hunt') {
-                sidebar.querySelectorAll('.script-shop-menu').forEach(menu => { menu.hidden = true; });
-                document.querySelector('.portable-depot-backdrop')?.remove();
-                document.querySelector('.script-market-backdrop')?.remove();
-            }
-        }
+    sidebar.dataset.location = location;
+    if (location === 'hunt') {
+        sidebar.querySelectorAll('.script-shop-menu').forEach(menu => { menu.hidden = true; });
+        document.querySelector('.portable-depot-backdrop')?.remove();
+        document.querySelector('.script-market-backdrop')?.remove();
+    }
+
+    const sellBtn = document.getElementById('dock-btn-sell');
+    if (sellBtn) sellBtn.style.display = (location === 'city') ? '' : 'none';
+}
         updateNavButtonAppearance();
     }
 
@@ -2574,51 +2984,26 @@
         }
 
         if (!document.getElementById('dock-btn-shops')) {
-            const shopWrap = document.createElement('span');
-            shopWrap.className = 'dock-poke-wrap script-sidebar-wrap';
-            const shopsButton = document.createElement('button');
-            shopsButton.id = 'dock-btn-shops';
-            shopsButton.className = 'dock-btn';
-            shopsButton.type = 'button';
-            shopsButton.textContent = '🏪';
-            shopsButton.title = tr('shops');
+    // 🏪 Comprar (abre direto no tab Buy)
+    const buyBtn = document.createElement('button');
+    buyBtn.id = 'dock-btn-shops';
+    buyBtn.className = 'dock-btn';
+    buyBtn.type = 'button';
+    buyBtn.textContent = '🏪';
+    buyBtn.title = 'Comprar (Poké Bolas & Poções)';
+    buyBtn.addEventListener('click', () => showPortableShop('buy'));
+    sidebar.appendChild(buyBtn);
 
-            const menu = document.createElement('div');
-            menu.className = 'poke-menu script-shop-menu';
-            menu.setAttribute('role', 'menu');
-            menu.hidden = true;
-            const rebuildMenu = () => {
-                menu.innerHTML = '';
-                const addItem = (label, handler) => {
-                    const item = document.createElement('button');
-                    item.type = 'button';
-                    item.className = 'poke-menu-item';
-                    item.setAttribute('role', 'menuitem');
-                    item.textContent = label;
-                    item.addEventListener('click', event => {
-                        event.stopPropagation();
-                        menu.hidden = true;
-                        handler();
-                    });
-                    menu.appendChild(item);
-                };
-                addItem(`🌐 ${tr('globalMarket')}`, showGlobalMarketWindow);
-                addItem(`🔴 ${tr('ballShop')}`, showPortableBallShop);
-                addItem(`💰 ${tr('sellItems')}`, showHuntSellWindow);
-            };
-            shopsButton.addEventListener('click', event => {
-                event.stopPropagation();
-                const willOpen = menu.hidden;
-                document.querySelectorAll('.script-shop-menu').forEach(other => { other.hidden = true; });
-                if (willOpen) rebuildMenu();
-                menu.hidden = !willOpen;
-            });
-            document.addEventListener('click', event => {
-                if (!shopWrap.contains(event.target)) menu.hidden = true;
-            });
-            shopWrap.append(shopsButton, menu);
-            sidebar.appendChild(shopWrap);
-        }
+    // 💰 Vender (abre direto no tab Sell Items)
+    const sellBtn = document.createElement('button');
+    sellBtn.id = 'dock-btn-sell';
+    sellBtn.className = 'dock-btn';
+    sellBtn.type = 'button';
+    sellBtn.textContent = '💰';
+    sellBtn.title = 'Vender Itens & Pokémon';
+    sellBtn.addEventListener('click', () => showPortableShop('sell-items'));
+    sidebar.appendChild(sellBtn);
+}
 
         if (!document.getElementById('dock-btn-depot')) {
             const depotButton = document.createElement('button');
@@ -4417,454 +4802,649 @@
         }
     }
 
-    async function showHuntSellWindow() {
-        document.querySelector('.hunt-sell-backdrop')?.remove();
 
-        const backdrop = document.createElement('div');
-        backdrop.className = 'sell-confirm-backdrop hunt-sell-backdrop';
-        backdrop.innerHTML = `
-            <div class="sell-confirm-modal" style="width:600px; max-width:94vw;">
-                <div class="sell-confirm-title">
-                    <span>🛒 Vender itens</span>
-                    <button class="hunt-pokemon-open mk-bulk-btn" type="button" style="margin-left:auto;">🐾 Pokémon</button>
-                    <button class="hunt-sell-close" type="button" style="margin-left:auto;background:none;border:0;color:#a0aec0;font-size:20px;cursor:pointer;">×</button>
-                </div>
-                <div class="sell-confirm-body">
-                    <div class="hunt-sell-status" style="color:#a0aec0;text-align:center;padding:16px;">Carregando inventário...</div>
-                    <div class="hunt-sell-list"></div>
-                    <div class="sell-confirm-footer" style="display:none;">
-                        <button class="sell-confirm-btn hunt-sell-select-all" type="button">Marcar tudo</button>
-                        <button class="sell-confirm-btn yes hunt-sell-submit" type="button">Vender</button>
-                        <button class="sell-confirm-btn no hunt-sell-cancel" type="button">Cancelar</button>
+// ============ NOVA LOJA UNIFICADA ============
+
+async function showPortableShop(initialTab = 'buy') {
+    document.querySelector('.piw-shop-backdrop')?.remove();
+
+    const backdrop = document.createElement('div');
+    backdrop.className = 'piw-shop-backdrop';
+    backdrop.innerHTML = `
+        <div class="piw-shop-window">
+            <header class="piw-shop-header">
+                <div class="piw-shop-title">
+                    <span class="piw-shop-icon" data-icon>🛒</span>
+                    <div>
+                        <h2 data-title>Loja</h2>
+                        <small data-subtitle>Compre, venda e gerencie seus itens</small>
                     </div>
                 </div>
+                <div class="piw-shop-balance">
+                    <span class="piw-balance-label">Saldo</span>
+                    <strong class="piw-balance-value">💲 —</strong>
+                </div>
+                <button class="piw-shop-close" type="button" aria-label="Fechar">×</button>
+            </header>
+
+            <nav class="piw-shop-tabs">
+                <button class="piw-shop-tab${initialTab === 'buy' ? ' on' : ''}" data-tab="buy" type="button">
+                    <span>🛒</span> Comprar
+                </button>
+                <button class="piw-shop-tab${initialTab === 'sell-items' ? ' on' : ''}" data-tab="sell-items" type="button">
+                    <span>💰</span> Vender Itens
+                </button>
+                <button class="piw-shop-tab${initialTab === 'sell-pokemon' ? ' on' : ''}" data-tab="sell-pokemon" type="button">
+                    <span>🐾</span> Vender Pokémon
+                </button>
+            </nav>
+
+            <div class="piw-shop-body">
+                <div class="piw-tab-panel" data-panel="buy">
+                    <div class="piw-shop-loading">Carregando catálogo…</div>
+                    <div class="piw-shop-grid"></div>
+                </div>
+                <div class="piw-tab-panel" data-panel="sell-items" hidden>
+                    <div class="piw-filter-bar">
+                        <div class="piw-filter-search">
+                            <span>🔎</span>
+                            <input class="piw-sell-items-search" type="search" placeholder="Buscar item…">
+                        </div>
+                    </div>
+                    <div class="piw-shop-loading">Carregando inventário…</div>
+                    <div class="piw-sell-items-list"></div>
+                </div>
+                <div class="piw-tab-panel" data-panel="sell-pokemon" hidden>
+                    <div class="piw-filter-bar">
+                        <div class="piw-filter-search">
+                            <span>🔎</span>
+                            <input class="piw-search-input" type="search" placeholder="Buscar Pokémon…">
+                        </div>
+                        <div class="piw-filter-iv">
+                            <span>IV</span>
+                            <input class="piw-iv-min" type="number" min="0" max="192" placeholder="de">
+                            <span>–</span>
+                            <input class="piw-iv-max" type="number" min="0" max="192" placeholder="até">
+                        </div>
+                        <div class="piw-filter-quality">
+                            ${['Fraca','Comum','Incomum','Rara','Épica','Lendária','Mítica','Anciã','Divina']
+                                .map(q => `<button type="button" class="piw-quality-btn on" data-quality="${q}">${q}</button>`).join('')}
+                        </div>
+                        <div class="piw-filter-actions">
+                            <button type="button" class="piw-filter-clear">Limpar</button>
+                        </div>
+                    </div>
+                    <div class="piw-shop-loading">Carregando Pokémon…</div>
+                    <div class="piw-sell-list"></div>
+                </div>
             </div>
-        `;
-        document.body.appendChild(backdrop);
 
-        const close = () => backdrop.remove();
-        backdrop.querySelector('.hunt-sell-close').addEventListener('click', close);
-        backdrop.querySelector('.hunt-sell-cancel').addEventListener('click', close);
-        backdrop.querySelector('.hunt-pokemon-open').addEventListener('click', () => {
-            close();
-            showHuntPokemonSellWindow();
-        });
+<footer class="piw-shop-footer">
+    <span class="piw-sell-summary" data-summary>—</span>
+    <div class="piw-sell-actions" data-actions hidden>
+        <button type="button" class="piw-btn piw-btn--ghost piw-mark-all" hidden>Marcar todos</button>
+        <button type="button" class="piw-btn piw-btn--ghost piw-sell-cancel">Cancelar</button>
+        <button type="button" class="piw-btn piw-btn--gold piw-sell-submit" disabled>Vender</button>
+    </div>
+</footer>
+        </div>
+    `;
+    document.body.appendChild(backdrop);
 
-        const status = backdrop.querySelector('.hunt-sell-status');
-        const list = backdrop.querySelector('.hunt-sell-list');
-        const footer = backdrop.querySelector('.sell-confirm-footer');
-        const submit = backdrop.querySelector('.hunt-sell-submit');
-        const selectAll = backdrop.querySelector('.hunt-sell-select-all');
+    const $ = sel => backdrop.querySelector(sel);
+    const $$ = sel => Array.from(backdrop.querySelectorAll(sel));
+    const iconEl = $('[data-icon]');
+    const titleEl = $('[data-title]');
+    const subtitleEl = $('[data-subtitle]');
+    const balanceEl = $('.piw-balance-value');
+    const footerSummary = $('[data-summary]');
+    const footerActions = $('[data-actions]');
+   const submitBtn = $('.piw-sell-submit');
+const markAllBtn = $('.piw-mark-all');
+const locale = getGameLanguage() === 'pt' ? 'pt-BR' : 'en-US';
 
-        try {
-            const [inventory, shopData] = await Promise.all([
-                gameSocket
-                    ? requestGameEvent('inventory', 'inv-get', latestInventory).then(async entries => {
-                        if (!entries.length) return readSellableInventoryFromDOM();
-                        const payload = await fetch(ITEMS_JSON_URL).then(response => response.json());
-                        const catalogItems = Array.isArray(payload) ? payload : (payload.items || []);
-                        const catalog = new Map(catalogItems.map(item => [String(item.id), item]));
-                        return entries.map(entry => {
-                            const catalogItem = catalog.get(String(entry.itemId));
-                            return {
-                                itemId: String(entry.itemId),
-                                name: catalogItem?.name || `Item ${entry.itemId}`,
-                                qty: Number(entry.quantity) || 0,
-                                category: String(catalogItem?.category || '').toLowerCase(),
-                                npcPrice: Number(catalogItem?.npcPrice) || 0,
-                                icon: catalogItem?.icon || catalogItem?.image || catalogItem?.sprite || '',
-                                locked: isNativeLocked(entry)
-                            };
-                        }).filter(item => item.qty > 0 && item.npcPrice > 0)
-                            .filter(item => !['heal', 'revive', 'stone'].includes(item.category));
-                    })
-                    : readSellableInventoryFromDOM(),
-                gameApiRequest('/api/game/shop')
-            ]);
-            if (inventory.length === 0) {
-                status.textContent = 'Nenhum item vendável foi encontrado no inventário.';
-                return;
-            }
+    const close = () => backdrop.remove();
+    $('.piw-shop-close').addEventListener('click', close);
+    $('.piw-sell-cancel').addEventListener('click', close);
+    backdrop.addEventListener('click', e => { if (e.target === backdrop) close(); });
 
-            status.style.display = 'none';
-            footer.style.display = 'flex';
-            inventory.sort((a, b) => a.name.localeCompare(b.name)).forEach(item => {
-                const protectionReason = getItemProtectionReason(item);
-                const isProtected = Boolean(protectionReason);
-                const row = document.createElement('label');
-                row.className = `hunt-sell-row${isProtected ? ' protected' : ''}`;
-                row.style.gridTemplateColumns = 'auto 30px minmax(0, 1fr) 90px auto';
+    // ---------- Estado ----------
+    let shopData = null;
+    let ballsData = null;
+    let inventory = null;
+    let pokemonList = null;
+    let activeTab = initialTab;
 
-                const checkbox = document.createElement('input');
-                checkbox.type = 'checkbox';
-                checkbox.disabled = isProtected;
-                checkbox.dataset.itemId = item.itemId;
-                checkbox.dataset.itemName = item.name;
-                checkbox.dataset.unitPrice = String(item.npcPrice);
+    const TAB_META = {
+        'buy':           { icon: '🛒', title: 'Comprar',         subtitle: 'Poké Bolas e itens de cura' },
+        'sell-items':    { icon: '💰', title: 'Vender Itens',    subtitle: 'Selecione itens do seu inventário' },
+        'sell-pokemon':  { icon: '🐾', title: 'Vender Pokémon',  subtitle: 'Selecione Pokémon do seu Box' }
+    };
 
-                const name = document.createElement('span');
-                name.style.cssText = 'min-width:0;';
-                const itemIcon = document.createElement('img');
-                itemIcon.className = 'hunt-item-sell-icon';
-                itemIcon.src = normalizeGameItemIcon(
-                    item.icon
-                    || globalItemApiData.get(String(item.itemId))?.icon
-                    || globalItemApiData.get(item.name.toLowerCase())?.icon
-                    || ''
-                );
-                itemIcon.alt = '';
-                itemIcon.addEventListener('error', () => itemIcon.remove(), { once: true });
-                name.textContent = `${item.name} (${item.qty.toLocaleString('pt-BR')}) · 💲${item.npcPrice.toLocaleString('pt-BR')}`;
+function switchTab(tab) {
+    activeTab = tab;
+    $$('.piw-shop-tab').forEach(t => t.classList.toggle('on', t.dataset.tab === tab));
+    $$('.piw-tab-panel').forEach(p => { p.hidden = p.dataset.panel !== tab; });
+    const meta = TAB_META[tab];
+    iconEl.textContent = meta.icon;
+    titleEl.textContent = meta.title;
+    subtitleEl.textContent = meta.subtitle;
+    const isSell = tab !== 'buy';
+    footerActions.hidden = !isSell;
+    markAllBtn.hidden = !isSell;
+    if (tab === 'buy') footerSummary.textContent = 'Clique numa quantidade para comprar';
+    else if (tab === 'sell-items') renderSellItems();
+    else renderSellPokemon();
+    updateMarkAllLabel();
+}
 
-                const quantity = document.createElement('input');
-                quantity.type = 'number';
-                quantity.min = '1';
-                quantity.max = String(item.qty);
-                quantity.value = String(item.qty);
-                quantity.disabled = isProtected;
+    $$('.piw-shop-tab').forEach(tab => tab.addEventListener('click', () => switchTab(tab.dataset.tab)));
 
-                const lock = document.createElement('span');
-                lock.textContent = isProtected ? '🔒' : '🔓';
-                lock.title = protectionReason ? `Bloqueado por: ${protectionReason}. Clique para desbloquear.` : 'Clique para bloquear pelo cadeado nativo do Mark';
-                lock.setAttribute('role', 'button'); lock.tabIndex = 0;
-                lock.style.cssText = 'cursor:pointer;font-size:16px;padding:4px;';
-                lock.addEventListener('click', async event => {
-                    event.preventDefault(); event.stopPropagation();
-                    try {
-                        const locked = await togglePortableItemProtection(item);
-                        lock.textContent = locked ? '🔒' : '🔓';
-                        checkbox.disabled = locked;
-                        quantity.disabled = locked;
-                        if (locked) checkbox.checked = false;
-                        updateSaleSummary();
-                    } catch (error) { showWindowMessage(backdrop.querySelector('.sell-confirm-modal'), error.message, true); }
-                });
-                row.append(checkbox, itemIcon, name, quantity, lock);
-                list.appendChild(row);
-            });
-
-            const updateSaleSummary = () => {
-                let total = 0;
-                list.querySelectorAll('.hunt-sell-row').forEach(row => {
-                    const checkbox = row.querySelector('input[type="checkbox"]');
-                    const quantity = row.querySelector('input[type="number"]');
-                    if (checkbox.checked) {
-                        total += (parseInt(quantity.value, 10) || 0) * (Number(checkbox.dataset.unitPrice) || 0);
-                    }
-                });
-                status.textContent = `Saldo atual: 💲${Number(shopData.gold || 0).toLocaleString('pt-BR')} · Venda selecionada: 💲${total.toLocaleString('pt-BR')}`;
-                status.style.display = '';
-                const eligible = Array.from(list.querySelectorAll('input[type="checkbox"]:not(:disabled)'));
-                selectAll.textContent = eligible.length > 0 && eligible.every(checkbox => checkbox.checked)
-                    ? 'Desmarcar tudo'
-                    : 'Marcar tudo';
-            };
-            selectAll.addEventListener('click', () => {
-                const eligible = Array.from(list.querySelectorAll('input[type="checkbox"]:not(:disabled)'));
-                const shouldSelect = eligible.some(checkbox => !checkbox.checked);
-                eligible.forEach(checkbox => { checkbox.checked = shouldSelect; });
-                updateSaleSummary();
-            });
-            list.addEventListener('input', updateSaleSummary);
-            list.addEventListener('change', updateSaleSummary);
-            updateSaleSummary();
-
-            submit.addEventListener('click', () => {
-                const selectedRows = Array.from(list.querySelectorAll('.hunt-sell-row')).flatMap(row => {
-                    const checkbox = row.querySelector('input[type="checkbox"]');
-                    const quantity = row.querySelector('input[type="number"]');
-                    if (!checkbox.checked) return [];
-                    const qty = Math.min(parseInt(quantity.value, 10) || 0, parseInt(quantity.max, 10) || 0);
-                    return qty > 0 ? [{
-                        itemId: checkbox.dataset.itemId,
-                        name: checkbox.dataset.itemName,
-                        qty
-                    }] : [];
-                });
-
-                if (selectedRows.length === 0) {
-                    status.textContent = 'Selecione pelo menos um item.';
-                    status.style.display = '';
-                    return;
-                }
-
-                const executeSale = async () => {
-                    submit.disabled = true;
-                    submit.textContent = 'Vendendo...';
-                    try {
-                        const result = await sellItemsThroughShop(selectedRows.map(({ itemId, qty }) => ({ itemId, qty })));
-                        latestInventory = null;
-                        shopData.gold = Number(result.gold ?? shopData.gold ?? 0);
-                        selectedRows.forEach(soldItem => {
-                            const checkbox = Array.from(list.querySelectorAll('input[type="checkbox"]'))
-                                .find(input => String(input.dataset.itemId) === String(soldItem.itemId));
-                            const row = checkbox?.closest('.hunt-sell-row');
-                            const quantity = row?.querySelector('input[type="number"]');
-                            if (!row || !checkbox || !quantity) return;
-                            const remaining = Math.max(0, Number(quantity.max || 0) - soldItem.qty);
-                            if (remaining === 0) {
-                                row.remove();
-                                return;
-                            }
-                            quantity.max = String(remaining);
-                            quantity.value = String(remaining);
-                            checkbox.checked = false;
-                            row.querySelector('span').textContent = `${checkbox.dataset.itemName} (${remaining.toLocaleString('pt-BR')}) · 💲${Number(checkbox.dataset.unitPrice || 0).toLocaleString('pt-BR')}`;
-                        });
-                        updateSaleSummary();
-                        showWindowMessage(backdrop.querySelector('.sell-confirm-modal'), `Venda concluída: +💲${Number(result.goldGained || 0).toLocaleString('pt-BR')}`);
-                        submit.disabled = false;
-                        submit.textContent = 'Vender';
-                    } catch (error) {
-                        console.error('Falha ao vender itens no Mark:', error);
-                        status.textContent = 'Não foi possível concluir a venda. Tente novamente.';
-                        status.style.display = '';
-                        submit.disabled = false;
-                        submit.textContent = 'Vender';
-                    }
-                };
-
-                const confirmationNames = new Set(getSellConfirmItems().map(name => name.toLowerCase()));
-                const selectedToConfirm = selectedRows
-                    .filter(item => confirmationNames.has(item.name.toLowerCase()))
-                    .map(item => item.name);
-                if (selectedToConfirm.length > 0) {
-                    showSellConfirm(selectedToConfirm, confirmed => {
-                        if (confirmed) executeSale();
-                    });
-                } else {
-                    executeSale();
-                }
-            });
-        } catch (error) {
-            console.error('Falha ao carregar o inventário do Mark:', error);
-            status.textContent = 'Não foi possível carregar os itens para venda.';
-        }
+    // ---------- Carregar dados ----------
+    try {
+        ballCatalogPromise = null;
+        markCatalogPromise = null;
+        const [shop, balls, inv, pokes] = await Promise.all([
+            loadMarkCatalog(),
+            loadBallCatalog().catch(() => ({})),
+            requestFreshGameEvent('inventory', 'inv-get', { timeoutMs: 3000, attempts: 2 }),
+            requestFreshGameEvent('pokes', 'pokes-get', { timeoutMs: 3000, attempts: 2 })
+        ]);
+        shopData = shop || {};
+        ballsData = balls || {};
+        inventory = inv || [];
+        pokemonList = pokes || [];
+        balanceEl.textContent = `💲 ${Number(shopData.gold || 0).toLocaleString(locale)}`;
+    } catch (err) {
+        $('.piw-shop-loading').textContent = `Falha ao carregar: ${err.message}`;
+        return;
     }
 
-    async function showHuntPokemonSellWindow() {
-        document.querySelector('.hunt-sell-backdrop')?.remove();
-        const backdrop = document.createElement('div');
-        backdrop.className = 'sell-confirm-backdrop hunt-sell-backdrop';
-        backdrop.innerHTML = `
-            <div class="sell-confirm-modal" style="width:600px; max-width:94vw;">
-                <div class="sell-confirm-title">
-                    <span>🐾 Vender Pokémon</span>
-                    <button class="hunt-items-open mk-bulk-btn" type="button" style="margin-left:auto;">🎒 Itens</button>
-                    <button class="hunt-sell-close" type="button" style="margin-left:auto;background:none;border:0;color:#a0aec0;font-size:20px;cursor:pointer;">×</button>
+    // ================================================================
+    // ABA 1: COMPRAR
+    // ================================================================
+    const buyPanel = $('[data-panel="buy"]');
+    const buyGrid = buyPanel.querySelector('.piw-shop-grid');
+    buyPanel.querySelector('.piw-shop-loading').hidden = true;
+
+    const itemCounts = new Map((inventory || []).map(i => [String(i.itemId), Number(i.quantity) || 0]));
+    const ballCounts = ballsData.counts || {};
+    const blockedBalls = new Set(['idle ball', 'master ball']);
+
+    const balls = (shopData.balls || []).filter(b => !blockedBalls.has(String(b.name).toLowerCase()));
+    const healItems = (shopData.items || []).filter(i =>
+        ['heal', 'revive'].includes(String(i.category || '').toLowerCase()) ||
+        /potion|revive/i.test(String(i.name || ''))
+    );
+
+    function renderProductCard(product, kind, owned) {
+        const isBall = kind === 'ball';
+        const iconSrc = isBall ? (product.iconUrl || product.icon) : (product.icon || product.iconUrl);
+        const card = document.createElement('article');
+        card.className = 'piw-shop-card';
+        card.innerHTML = `
+            <div class="piw-card-icon">
+                <img src="${escapeHTML(normalizeGameItemIcon(iconSrc))}" alt="" loading="lazy">
+            </div>
+            <div class="piw-card-info">
+                <h3>${escapeHTML(product.name)}</h3>
+                <div class="piw-card-meta">
+                    <span class="piw-card-owned">📦 ${owned.toLocaleString(locale)}</span>
+                    ${isBall && product.catchRate ? `<span class="piw-card-rate">⚡ x${product.catchRate}</span>` : ''}
                 </div>
-                <div class="sell-confirm-body">
-                    <div class="hunt-pokemon-filters" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;">
-                        <input class="hunt-pokemon-search" type="search" placeholder="Buscar Pokémon..." style="min-width:140px;flex:1;background:#0c161f;color:#e2e8f0;border:1px solid #273f52;border-radius:5px;padding:6px 8px;">
-                        <select class="hunt-pokemon-shiny-filter" style="background:#0c161f;color:#e2e8f0;border:1px solid #273f52;border-radius:5px;padding:6px;">
-                            <option value="">Todos</option>
-                            <option value="shiny">✨ Shiny</option>
-                            <option value="normal">Normais</option>
-                        </select>
-                        <input class="hunt-pokemon-iv-min-filter" type="number" min="0" max="192" placeholder="IV mín." style="width:72px;background:#0c161f;color:#e2e8f0;border:1px solid #273f52;border-radius:5px;padding:6px;">
-                        <input class="hunt-pokemon-iv-max-filter" type="number" min="0" max="192" placeholder="IV máx." style="width:72px;background:#0c161f;color:#e2e8f0;border:1px solid #273f52;border-radius:5px;padding:6px;">
-                        <input class="hunt-pokemon-quality-min-filter" type="number" min="0" step="0.01" placeholder="Qual. mín." style="width:82px;background:#0c161f;color:#e2e8f0;border:1px solid #273f52;border-radius:5px;padding:6px;">
-                        <input class="hunt-pokemon-quality-max-filter" type="number" min="0" step="0.01" placeholder="Qual. máx." style="width:82px;background:#0c161f;color:#e2e8f0;border:1px solid #273f52;border-radius:5px;padding:6px;">
-                    </div>
-                    <div class="hunt-sell-status" style="color:#a0aec0;text-align:center;padding:8px;">Carregando Pokémon...</div>
-                    <div class="hunt-sell-list"></div>
-                    <div class="sell-confirm-footer" style="display:none;">
-                        <button class="sell-confirm-btn hunt-pokemon-select-all" type="button">Marcar tudo</button>
-                        <button class="sell-confirm-btn yes hunt-pokemon-submit" type="button">Vender selecionados</button>
-                        <button class="sell-confirm-btn no hunt-sell-cancel" type="button">Cancelar</button>
-                    </div>
-                </div>
+                <div class="piw-card-price">💲 ${Number(product.priceGold || 0).toLocaleString(locale)}</div>
+            </div>
+            <div class="piw-card-actions">
+                ${[1, 10, 100, 1000, 10000].map(q =>
+                    `<button type="button" class="piw-buy-btn" data-qty="${q}">+${q.toLocaleString(locale)}</button>`
+                ).join('')}
             </div>
         `;
-        document.body.appendChild(backdrop);
-
-        const close = () => backdrop.remove();
-        backdrop.querySelector('.hunt-sell-close').addEventListener('click', close);
-        backdrop.querySelector('.hunt-sell-cancel').addEventListener('click', close);
-        backdrop.querySelector('.hunt-items-open').addEventListener('click', () => {
-            close();
-            showHuntSellWindow();
-        });
-
-        const status = backdrop.querySelector('.hunt-sell-status');
-        const list = backdrop.querySelector('.hunt-sell-list');
-        const footer = backdrop.querySelector('.sell-confirm-footer');
-        const submit = backdrop.querySelector('.hunt-pokemon-submit');
-        const pokeSearch = backdrop.querySelector('.hunt-pokemon-search');
-        const shinyFilter = backdrop.querySelector('.hunt-pokemon-shiny-filter');
-        const ivMinFilter = backdrop.querySelector('.hunt-pokemon-iv-min-filter');
-        const ivMaxFilter = backdrop.querySelector('.hunt-pokemon-iv-max-filter');
-        const qualityMinFilter = backdrop.querySelector('.hunt-pokemon-quality-min-filter');
-        const qualityMaxFilter = backdrop.querySelector('.hunt-pokemon-quality-max-filter');
-        const selectAll = backdrop.querySelector('.hunt-pokemon-select-all');
-
-        try {
-            const [pokemon, shopData] = await Promise.all([
-                (async () => {
-                    const contextPokemon = await requestPokemonTeamFromGameContext(2200);
-                    if (contextPokemon.length) return contextPokemon;
-                    return requestGameEvent('pokes', 'pokes-get', latestPokemon);
-                })(),
-                gameApiRequest('/api/game/shop')
-            ]);
-            const sellable = pokemon.filter(poke => !poke.team && !poke.starter && Number(poke.sellValue) > 0);
-            if (!sellable.length) {
-                status.textContent = 'Nenhum Pokémon vendável foi encontrado.';
-                return;
-            }
-
-            footer.style.display = 'flex';
-            sellable.forEach(poke => {
-                const protectedPoke = Boolean(isNativeLocked(poke) || poke.shiny || poke.market || poke.listed);
-                const row = document.createElement('label');
-                row.className = `hunt-sell-row${protectedPoke ? ' protected' : ''}`;
-                const showPokemonSellIcon = preferenceEnabled(STORAGE_SHOW_POKEMON_SELL_ICON);
-                row.style.gridTemplateColumns = showPokemonSellIcon ? 'auto 30px minmax(0, 1fr) auto auto' : 'auto minmax(0, 1fr) auto auto';
-                row.dataset.searchName = String(poke.name || '').toLocaleLowerCase();
-                row.dataset.shiny = poke.shiny ? 'true' : 'false';
-                row.dataset.iv = String(Number(poke.ivTotal) || 0);
-                row.dataset.quality = String(Number(poke.quality) || 0);
-
-                const checkbox = document.createElement('input');
-                checkbox.type = 'checkbox';
-                checkbox.disabled = protectedPoke;
-                checkbox.dataset.pokeId = String(poke.id);
-                checkbox.dataset.value = String(poke.sellValue || 0);
-
-                let pokemonIcon = null;
-                if (showPokemonSellIcon) {
-                    const iconUrl = getPokemonIconUrl(poke.speciesId);
-                    if (iconUrl) {
-                        pokemonIcon = document.createElement('img');
-                        pokemonIcon.className = 'hunt-pokemon-sell-icon';
-                        pokemonIcon.src = iconUrl;
-                        pokemonIcon.alt = '';
-                        pokemonIcon.addEventListener('error', () => {
-                            pokemonIcon.remove();
-                            row.style.gridTemplateColumns = 'auto minmax(0, 1fr) auto auto';
-                        }, { once: true });
-                    }
-                }
-
-                const name = document.createElement('span');
-                const flags = [
-                    poke.shiny ? '✨' : '',
-                    isNativeLocked(poke) ? '🔒' : '',
-                    (poke.market || poke.listed) ? '🏷️' : ''
-                ].filter(Boolean).join(' ');
-                const quality = formatPokemonQualityWithPotential(poke.quality, poke.ivTotal, poke.shiny);
-                name.append(
-                    document.createTextNode(`${poke.name || `Pokémon ${poke.speciesId}`} · Nv ${poke.level ?? '—'} · IV ${poke.ivTotal ?? '—'} · `)
-                );
-                const rarityInfo = getPokemonQualityInfo(poke.quality);
-                if (rarityInfo) {
-                    const rarity = document.createElement('span');
-                    rarity.textContent = quality;
-                    rarity.style.color = rarityInfo.color;
-                    rarity.style.fontWeight = '800';
-                    name.append(rarity);
-                } else {
-                    name.append(document.createTextNode(quality));
-                }
-                name.append(document.createTextNode(` ${flags}`));
-
-                const value = document.createElement('strong');
-                value.textContent = `💲${Number(poke.sellValue).toLocaleString('pt-BR')}`;
-                const lock = document.createElement('button');
-                lock.type = 'button';
-                lock.className = 'mk-lock';
-                lock.textContent = isNativeLocked(poke) ? '🔒' : '🔓';
-                lock.title = 'Usar o cadeado nativo deste Pokémon';
-                lock.addEventListener('click', async event => {
-                    event.preventDefault(); event.stopPropagation();
-                    try {
-                        const locked = await toggleNativeLock('pokemon', poke);
-                        lock.textContent = locked ? '🔒' : '🔓';
-                        checkbox.disabled = locked || poke.shiny || poke.market || poke.listed;
-                        if (locked) checkbox.checked = false;
-                        updateSummary();
-                    } catch (error) { showWindowMessage(backdrop.querySelector('.sell-confirm-modal'), error.message, true); }
-                });
-                row.append(checkbox);
-                if (pokemonIcon) row.append(pokemonIcon);
-                row.append(name, value, lock);
-                list.appendChild(row);
-            });
-
-            const updateSummary = () => {
-                const total = Array.from(list.querySelectorAll('input[type="checkbox"]:checked'))
-                    .reduce((sum, checkbox) => sum + Number(checkbox.dataset.value || 0), 0);
-                const visibleRows = Array.from(list.querySelectorAll('.hunt-sell-row:not([hidden])'));
-                const selectable = visibleRows
-                    .map(row => row.querySelector('input[type="checkbox"]'))
-                    .filter(checkbox => checkbox && !checkbox.disabled);
-                const allVisibleSelected = selectable.length > 0 && selectable.every(checkbox => checkbox.checked);
-                selectAll.textContent = allVisibleSelected ? 'Desmarcar visíveis' : 'Marcar tudo';
-                status.textContent = `${visibleRows.length.toLocaleString('pt-BR')} Pokémon exibido(s) · Saldo: 💲${Number(shopData.gold || 0).toLocaleString('pt-BR')} · Selecionado: 💲${total.toLocaleString('pt-BR')}`;
-            };
-            const applyPokemonFilters = () => {
-                const query = pokeSearch.value.trim().toLocaleLowerCase();
-                const minIv = ivMinFilter.value === '' ? null : Number(ivMinFilter.value);
-                const maxIv = ivMaxFilter.value === '' ? null : Number(ivMaxFilter.value);
-                const minQuality = qualityMinFilter.value === '' ? null : Number(qualityMinFilter.value);
-                const maxQuality = qualityMaxFilter.value === '' ? null : Number(qualityMaxFilter.value);
-                list.querySelectorAll('.hunt-sell-row').forEach(row => {
-                    const shinyMatches = !shinyFilter.value
-                        || (shinyFilter.value === 'shiny' && row.dataset.shiny === 'true')
-                        || (shinyFilter.value === 'normal' && row.dataset.shiny !== 'true');
-                    const show = (!query || row.dataset.searchName.includes(query))
-                        && shinyMatches
-                        && (minIv === null || Number(row.dataset.iv) >= minIv)
-                        && (maxIv === null || Number(row.dataset.iv) <= maxIv)
-                        && (minQuality === null || Number(row.dataset.quality) >= minQuality)
-                        && (maxQuality === null || Number(row.dataset.quality) <= maxQuality);
-                    row.hidden = !show;
-                    if (!show) row.querySelector('input[type="checkbox"]').checked = false;
-                });
-                updateSummary();
-            };
-            list.addEventListener('change', updateSummary);
-            [pokeSearch, shinyFilter, ivMinFilter, ivMaxFilter, qualityMinFilter, qualityMaxFilter].forEach(control => {
-                control.addEventListener('input', applyPokemonFilters);
-            });
-            selectAll.addEventListener('click', () => {
-                const selectable = Array.from(list.querySelectorAll('.hunt-sell-row:not([hidden]) input[type="checkbox"]:not(:disabled)'));
-                const shouldSelect = selectable.some(checkbox => !checkbox.checked);
-                selectable.forEach(checkbox => { checkbox.checked = shouldSelect; });
-                updateSummary();
-            });
-            updateSummary();
-            applyPokemonFilters();
-
-            submit.addEventListener('click', async () => {
-                const pokeIds = Array.from(list.querySelectorAll('input[type="checkbox"]:checked'))
-                    .map(checkbox => checkbox.dataset.pokeId);
-                if (!pokeIds.length) return showScriptNotice('Selecione pelo menos um Pokémon.');
-                if (!await showScriptConfirm(`Vender ${pokeIds.length} Pokémon selecionado(s)?`, { title: 'Confirmar venda', confirmLabel: 'Vender' })) return;
-                submit.disabled = true;
+        card.querySelector('img')?.addEventListener('error', e => e.currentTarget.remove(), { once: true });
+        card.querySelectorAll('.piw-buy-btn').forEach(btn => {
+            btn.addEventListener('click', async () => {
+                const quantity = Number(btn.dataset.qty);
+                const unitPrice = Number(product.priceGold) || 0;
+                const currentGold = Number(shopData.gold || 0);
+                const ok = await new Promise(res => showPurchaseConfirm({
+                    name: product.name, quantity, unitPrice, currentGold, currency: 'GOLD'
+                }, res));
+                if (!ok) return;
+                btn.disabled = true;
+                card.querySelectorAll('.piw-buy-btn').forEach(b => b.disabled = true);
                 try {
-                    const result = await gameApiRequest('/api/game/pokemon/sell', {
-                        method: 'POST',
-                        body: JSON.stringify({ pokeIds })
-                    });
-                    latestPokemon = null;
-                    shopData.gold = Number(result.gold ?? shopData.gold ?? 0);
-                    list.querySelectorAll('input[type="checkbox"]:checked').forEach(checkbox => checkbox.closest('.hunt-sell-row')?.remove());
-                    applyPokemonFilters();
-                    if (!list.querySelector('.hunt-sell-row')) footer.style.display = 'none';
-                    showWindowMessage(backdrop.querySelector('.sell-confirm-modal'), `Venda concluída: +💲${Number(result.goldGained || 0).toLocaleString('pt-BR')}`);
-                    submit.disabled = false;
-                    sendGameMessage({ type: 'pokes-get' });
-                } catch (error) {
-                    showScriptNotice(`Não foi possível concluir a venda: ${error.message}`, { title: 'Erro na venda', isError: true });
-                    submit.disabled = false;
+                    const result = isBall
+                        ? await gameApiRequest('/api/game/balls/buy', { method: 'POST', body: JSON.stringify({ ballId: product.id, qty: quantity }) })
+                        : await buyFromMarkShop(product, 'item', quantity);
+                    shopData.gold = Number(result.gold ?? shopData.gold);
+                    balanceEl.textContent = `💲 ${shopData.gold.toLocaleString(locale)}`;
+                    const serverCount = isBall ? result.counts?.[String(product.id)] : null;
+                    const newOwned = Number(serverCount ?? (owned + quantity));
+                    card.querySelector('.piw-card-owned').textContent = `📦 ${newOwned.toLocaleString(locale)}`;
+                    ballCatalogPromise = null; markCatalogPromise = null;
+                    showWindowMessage($('.piw-shop-window'), `Compra concluída: ${quantity.toLocaleString(locale)}× ${product.name}`);
+                } catch (err) {
+                    showWindowMessage($('.piw-shop-window'), `Falha: ${err.message}`, true);
+                } finally {
+                    card.querySelectorAll('.piw-buy-btn').forEach(b => b.disabled = false);
                 }
             });
-        } catch (error) {
-            console.error('Falha ao carregar os Pokémon:', error);
-            status.textContent = 'Não foi possível carregar os Pokémon.';
-        }
+        });
+        return card;
     }
+
+    // Bloco de Poké Bolas
+    if (balls.length) {
+        const group = document.createElement('div');
+        group.className = 'piw-shop-group';
+        group.innerHTML = '<h3 class="piw-shop-group-title">⚪ Poké Bolas</h3>';
+        const grid = document.createElement('div');
+        grid.className = 'piw-shop-grid';
+        balls.forEach(b => grid.appendChild(renderProductCard(b, 'ball', Number(ballCounts[String(b.id)] || 0))));
+        group.appendChild(grid);
+        buyGrid.parentElement.insertBefore(group, buyGrid.nextSibling);
+    }
+
+    // Bloco de Poções/Revives
+    if (healItems.length) {
+        const group = document.createElement('div');
+        group.className = 'piw-shop-group';
+        group.innerHTML = '<h3 class="piw-shop-group-title">💊 Poções & Revives</h3>';
+        const grid = document.createElement('div');
+        grid.className = 'piw-shop-grid';
+        healItems.forEach(i => grid.appendChild(renderProductCard(i, 'item', Number(itemCounts.get(String(i.id)) || 0))));
+        group.appendChild(grid);
+        buyGrid.parentElement.insertBefore(group, buyGrid.nextSibling);
+    }
+
+    buyGrid.remove(); // remove o grid vazio placeholder
+
+    // ================================================================
+    // ABA 2: VENDER ITENS
+    // ================================================================
+    const sellItemsPanel = $('[data-panel="sell-items"]');
+    const sellItemsList = sellItemsPanel.querySelector('.piw-sell-items-list');
+    const sellItemsSearch = sellItemsPanel.querySelector('.piw-sell-items-search');
+
+    async function loadSellableItems() {
+        try {
+            const entries = await (gameSocket
+                ? requestGameEvent('inventory', 'inv-get', latestInventory).then(async list => {
+                    if (!list.length) return readSellableInventoryFromDOM();
+                    const payload = await fetch(ITEMS_JSON_URL).then(r => r.json());
+                    const catalogItems = Array.isArray(payload) ? payload : (payload.items || []);
+                    const catalog = new Map(catalogItems.map(i => [String(i.id), i]));
+                    return list.map(entry => {
+                        const item = catalog.get(String(entry.itemId));
+                        return {
+                            itemId: String(entry.itemId),
+                            name: item?.name || `Item ${entry.itemId}`,
+                            qty: Number(entry.quantity) || 0,
+                            category: String(item?.category || '').toLowerCase(),
+                            npcPrice: Number(item?.npcPrice) || 0,
+                            icon: item?.icon || item?.image || item?.sprite || '',
+                            locked: isNativeLocked(entry)
+                        };
+                    }).filter(i => i.qty > 0 && i.npcPrice > 0)
+                      .filter(i => !['heal', 'revive', 'stone'].includes(i.category));
+                })
+                : readSellableInventoryFromDOM());
+            return entries;
+        } catch { return []; }
+    }
+
+   let sellableItemsCache = null;
+async function renderSellItems() {
+    const loading = sellItemsPanel.querySelector('.piw-shop-loading');
+    if (!sellableItemsCache) {
+        loading.hidden = false;
+        // força recarregar do servidor
+        latestInventory = null;
+        sellableItemsCache = await loadSellableItems();
+    }
+    loading.hidden = true;
+    sellItemsList.innerHTML = '';
+    const query = sellItemsSearch.value.trim().toLowerCase();
+    const filtered = sellableItemsCache
+        .filter(item => !query || item.name.toLowerCase().includes(query))
+        .sort((a, b) => {
+            // 1) locked por último  2) nome alfabético
+            const la = isItemRowLocked(a) ? 1 : 0;
+            const lb = isItemRowLocked(b) ? 1 : 0;
+            if (la !== lb) return la - lb;
+            return a.name.localeCompare(b.name, locale);
+        });
+
+    if (!filtered.length) {
+        sellItemsList.innerHTML = '<div class="piw-shop-empty">Nenhum item vendável.</div>';
+        updateSellItemsSummary();
+        return;
+    }
+
+    filtered.forEach(item => {
+        const protectionReason = getItemProtectionReason(item);
+        const isProtected = Boolean(protectionReason);
+        const row = document.createElement('label');
+        row.className = `piw-sell-row piw-sell-row--item${isProtected ? ' is-locked' : ''}`;
+        row.dataset.locked = isProtected ? '1' : '0';
+        row.innerHTML = `
+            <input type="checkbox" class="piw-sell-check" data-item-id="${escapeHTML(item.itemId)}" data-item-name="${escapeHTML(item.name)}" data-unit-price="${item.npcPrice}" ${isProtected ? 'disabled' : ''}>
+            <div class="piw-sell-icon">
+                <img src="${escapeHTML(normalizeGameItemIcon(item.icon))}" alt="" loading="lazy">
+            </div>
+            <div class="piw-sell-info">
+                <div class="piw-sell-name">${escapeHTML(item.name)}</div>
+                <div class="piw-sell-meta">
+                    <span>📦 ${item.qty.toLocaleString(locale)}</span>
+                    <span class="piw-sell-price">💲 ${item.npcPrice.toLocaleString(locale)}</span>
+                </div>
+            </div>
+            <input type="number" class="piw-sell-qty" min="1" max="${item.qty}" value="${item.qty}" ${isProtected ? 'disabled' : ''}>
+            <button type="button" class="piw-sell-lock ${isProtected ? 'is-locked' : ''}" title="${protectionReason || 'Trancar'}" ${isProtected ? 'data-locked="1"' : ''}>${isProtected ? '🔒' : '🔓'}</button>
+        `;
+        row.querySelector('img')?.addEventListener('error', e => e.currentTarget.remove(), { once: true });
+
+        row.querySelector('.piw-sell-lock').addEventListener('click', async e => {
+            e.preventDefault(); e.stopPropagation();
+            const currentlyLocked = row.classList.contains('is-locked');
+            try {
+                await togglePortableItemProtection(item);
+                const nowLocked = !currentlyLocked;
+                row.classList.toggle('is-locked', nowLocked);
+                row.dataset.locked = nowLocked ? '1' : '0';
+                const cb = row.querySelector('.piw-sell-check');
+                const qty = row.querySelector('.piw-sell-qty');
+                cb.disabled = nowLocked;
+                qty.disabled = nowLocked;
+                if (nowLocked) cb.checked = false;
+                const lockBtn = row.querySelector('.piw-sell-lock');
+                lockBtn.textContent = nowLocked ? '🔒' : '🔓';
+                lockBtn.classList.toggle('is-locked', nowLocked);
+                // reordena: locked vai para o fim
+                const parent = sellItemsList;
+                parent.appendChild(row);
+                updateSellItemsSummary();
+            } catch (err) {
+                showWindowMessage($('.piw-shop-window'), err.message, true);
+            }
+        });
+        row.querySelector('.piw-sell-check').addEventListener('change', updateSellItemsSummary);
+        row.querySelector('.piw-sell-qty').addEventListener('input', updateSellItemsSummary);
+        sellItemsList.appendChild(row);
+    });
+    updateSellItemsSummary();
+}
+
+function isItemRowLocked(item) {
+    return Boolean(getItemProtectionReason(item));
+}
+
+    function updateSellItemsSummary() {
+        let total = 0, count = 0;
+        sellItemsList.querySelectorAll('.piw-sell-row').forEach(row => {
+            const cb = row.querySelector('.piw-sell-check');
+            const qty = row.querySelector('.piw-sell-qty');
+            if (cb.checked) {
+                count++;
+                total += (parseInt(qty.value, 10) || 0) * (Number(cb.dataset.unitPrice) || 0);
+            }
+        });
+        footerSummary.textContent = `${count} item(ns) selecionado(s) · 💲 ${total.toLocaleString(locale)}`;
+        submitBtn.disabled = count === 0;
+        submitBtn.textContent = 'Vender itens';
+        const eligible = Array.from(sellItemsList.querySelectorAll('.piw-sell-check:not(:disabled)'));
+
+        updateMarkAllLabel();
+    }
+
+    sellItemsSearch.addEventListener('input', () => renderSellItems());
+    sellItemsList.addEventListener('change', updateSellItemsSummary);
+
+    // ================================================================
+    // ABA 3: VENDER POKÉMON
+    // ================================================================
+    const sellPokePanel = $('[data-panel="sell-pokemon"]');
+    const pokeListEl = sellPokePanel.querySelector('.piw-sell-list');
+    const pokeSearchInput = sellPokePanel.querySelector('.piw-search-input');
+    const pokeIvMin = sellPokePanel.querySelector('.piw-iv-min');
+    const pokeIvMax = sellPokePanel.querySelector('.piw-iv-max');
+    const pokeQualityBtns = Array.from(sellPokePanel.querySelectorAll('.piw-quality-btn'));
+
+    const activeQualities = new Set(pokeQualityBtns.map(b => b.dataset.quality));
+
+    function renderSellPokemon() {
+        const loading = sellPokePanel.querySelector('.piw-shop-loading');
+        pokeListEl.innerHTML = '';
+        const sellable = (pokemonList || []).filter(p => !p.team && !p.starter && Number(p.sellValue) > 0);
+        if (!sellable.length) {
+            loading.hidden = true;
+            pokeListEl.innerHTML = '<div class="piw-shop-empty">Nenhum Pokémon vendável.</div>';
+            updateSellPokeSummary();
+            return;
+        }
+        loading.hidden = true;
+
+        sellable.sort((a, b) => {
+            const la = isPokemonLockedForSort(a) ? 1 : 0;
+            const lb = isPokemonLockedForSort(b) ? 1 : 0;
+            if (la !== lb) return la - lb;
+            return String(a.name || '').localeCompare(String(b.name || ''), locale);
+        });
+
+        function isPokemonLockedForSort(poke) {
+            return Boolean(poke.locked ?? poke.isLocked ?? poke.protected)
+            || isNativeLocked(poke)
+            || pokemonLockCache.has(String(poke.id));
+        }
+
+
+        sellable.forEach(poke => {
+            const locked = Boolean(poke.locked ?? poke.isLocked ?? poke.protected)
+                || isNativeLocked(poke)
+                || pokemonLockCache.has(String(poke.id));
+            const shiny = Boolean(poke.shiny);
+            const qualityInfo = getPokemonQualityInfo(poke.quality);
+            const qualityLabel = qualityInfo?.label || 'Comum';
+            const ivTotal = Number(poke.ivTotal || 0);
+            const potential = getPokemonPotentialPercent(poke.quality, ivTotal, shiny);
+
+            const row = document.createElement('label');
+            row.className = `piw-sell-row piw-sell-row--poke${locked ? ' is-locked' : ''}`;
+            row.dataset.searchName = String(poke.name || '').toLowerCase();
+            row.dataset.iv = String(ivTotal);
+            row.dataset.quality = qualityLabel;
+            row.dataset.value = String(poke.sellValue || 0);
+            row.dataset.pokeId = String(poke.id);
+            row.innerHTML = `
+                <input type="checkbox" class="piw-sell-check" ${locked ? 'disabled' : ''}>
+                <div class="piw-sell-icon">
+                    <img src="${escapeHTML(getPokemonIconUrl(poke.speciesId) || '')}" alt="" loading="lazy">
+                </div>
+                <div class="piw-sell-info">
+                    <div class="piw-sell-name">
+                        ${escapeHTML(poke.name || `Pokémon ${poke.speciesId}`)}
+                        ${shiny ? '<span class="piw-tag piw-tag--shiny">✨ Shiny</span>' : ''}
+                        ${locked ? '<span class="piw-tag piw-tag--locked">🔒</span>' : ''}
+                    </div>
+                    <div class="piw-sell-meta">
+                        <span>Nv ${poke.level ?? 1}</span>
+                        <span>IV ${ivTotal}/192</span>
+                        <span class="piw-quality-label" style="color:${qualityInfo?.color || '#a0aec0'}">${qualityLabel}</span>
+                        ${potential !== null ? `<span class="piw-sell-potential">${potential}%</span>` : ''}
+                    </div>
+                </div>
+                <div class="piw-sell-price">💲 ${Number(poke.sellValue).toLocaleString(locale)}</div>
+                <button type="button" class="piw-sell-lock ${locked ? 'is-locked' : ''}" title="${locked ? 'Destrancar' : 'Trancar'}">${locked ? '🔒' : '🔓'}</button>
+            `;
+            row.querySelector('img')?.addEventListener('error', e => e.currentTarget.remove(), { once: true });
+            row.querySelector('.piw-sell-lock').addEventListener('click', async e => {
+                e.preventDefault(); e.stopPropagation();
+                const isCurrentlyLocked = row.classList.contains('is-locked');
+                try {
+                    await toggleNativePokemonLock(poke.id, !isCurrentlyLocked);
+                    const nowLocked = !isCurrentlyLocked;
+                    row.classList.toggle('is-locked', nowLocked);
+                    const check = row.querySelector('.piw-sell-check');
+                    check.disabled = nowLocked;
+                    if (nowLocked) check.checked = false;
+                    const lockBtn = row.querySelector('.piw-sell-lock');
+                    lockBtn.textContent = nowLocked ? '🔒' : '🔓';
+                    lockBtn.classList.toggle('is-locked', nowLocked);
+                    updateSellPokeSummary();
+                } catch (err) {
+                    showWindowMessage($('.piw-shop-window'), err.message, true);
+                }
+            });
+            row.querySelector('.piw-sell-check').addEventListener('change', updateSellPokeSummary);
+            pokeListEl.appendChild(row);
+        });
+        applyPokeFilters();
+    }
+
+    function applyPokeFilters() {
+        const q = pokeSearchInput.value.trim().toLowerCase();
+        const min = pokeIvMin.value === '' ? null : Number(pokeIvMin.value);
+        const max = pokeIvMax.value === '' ? null : Number(pokeIvMax.value);
+        pokeListEl.querySelectorAll('.piw-sell-row--poke').forEach(row => {
+            const iv = Number(row.dataset.iv);
+            const matches = (!q || row.dataset.searchName.includes(q))
+                && (min === null || iv >= min)
+                && (max === null || iv <= max)
+                && activeQualities.has(row.dataset.quality);
+            row.hidden = !matches;
+            if (!matches) row.querySelector('.piw-sell-check').checked = false;
+        });
+        updateSellPokeSummary();
+    }
+
+    function updateSellPokeSummary() {
+        const checks = Array.from(pokeListEl.querySelectorAll('.piw-sell-check:checked'));
+        const total = checks.reduce((sum, c) => sum + Number(c.closest('.piw-sell-row').dataset.value || 0), 0);
+        footerSummary.textContent = `${checks.length} Pokémon selecionado(s) · 💲 ${total.toLocaleString(locale)}`;
+        submitBtn.disabled = checks.length === 0;
+        submitBtn.textContent = 'Vender Pokémon';
+        updateMarkAllLabel();
+    }
+
+    [pokeSearchInput, pokeIvMin, pokeIvMax].forEach(el => el.addEventListener('input', applyPokeFilters));
+    pokeQualityBtns.forEach(btn => btn.addEventListener('click', () => {
+        const q = btn.dataset.quality;
+        if (activeQualities.has(q)) activeQualities.delete(q);
+        else activeQualities.add(q);
+        btn.classList.toggle('on', activeQualities.has(q));
+        applyPokeFilters();
+    }));
+    sellPokePanel.querySelector('.piw-filter-clear').addEventListener('click', () => {
+        pokeSearchInput.value = ''; pokeIvMin.value = ''; pokeIvMax.value = '';
+        activeQualities.clear();
+        pokeQualityBtns.forEach(b => { activeQualities.add(b.dataset.quality); b.classList.add('on'); });
+        applyPokeFilters();
+    });
+
+    // ================================================================
+    // SUBMIT (vender)
+    // ================================================================
+    submitBtn.addEventListener('click', async () => {
+        if (activeTab === 'sell-items') return submitSellItems();
+        if (activeTab === 'sell-pokemon') return submitSellPokemon();
+    });
+
+async function submitSellItems() {
+    const selected = Array.from(sellItemsList.querySelectorAll('.piw-sell-row')).flatMap(row => {
+        const cb = row.querySelector('.piw-sell-check');
+        if (!cb.checked) return [];
+        const qty = Math.min(
+            parseInt(row.querySelector('.piw-sell-qty').value, 10) || 0,
+            parseInt(row.querySelector('.piw-sell-qty').max, 10) || 0
+        );
+        return qty > 0 ? [{ itemId: cb.dataset.itemId, name: cb.dataset.itemName, qty }] : [];
+    });
+    if (!selected.length) return;
+    const confirmed = new Set(getSellConfirmItems().map(n => n.toLowerCase()));
+    const toConfirm = selected.filter(i => confirmed.has(i.name.toLowerCase())).map(i => i.name);
+    if (toConfirm.length) {
+        const ok = await new Promise(res => showSellConfirm(toConfirm, res));
+        if (!ok) return;
+    }
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Vendendo…';
+    try {
+        const result = await sellItemsThroughShop(selected.map(({ itemId, qty }) => ({ itemId, qty })));
+        shopData.gold = Number(result.gold ?? shopData.gold);
+        balanceEl.textContent = `💲 ${shopData.gold.toLocaleString(locale)}`;
+
+        // força recarregar do servidor após venda
+        latestInventory = null;
+        sellableItemsCache = null;
+        await renderSellItems();
+
+        showWindowMessage($('.piw-shop-window'), `Venda concluída: +💲 ${Number(result.goldGained || 0).toLocaleString(locale)}`);
+    } catch (err) {
+        showWindowMessage($('.piw-shop-window'), `Falha: ${err.message}`, true);
+    } finally {
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Vender itens';
+        updateSellItemsSummary();
+    }
+}
+
+async function submitSellPokemon() {
+    const rows = Array.from(pokeListEl.querySelectorAll('.piw-sell-check:checked')).map(c => c.closest('.piw-sell-row'));
+    const ids = rows.map(r => r.dataset.pokeId).filter(Boolean);
+    if (!ids.length) return;
+    if (!await showScriptConfirm(`Vender ${ids.length} Pokémon?`, { title: 'Confirmar', confirmLabel: 'Vender' })) return;
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Vendendo…';
+    try {
+        const result = await gameApiRequest('/api/game/pokemon/sell', {
+            method: 'POST',
+            body: JSON.stringify({ pokeIds: ids })
+        });
+        latestPokemon = null;
+        shopData.gold = Number(result.gold ?? shopData.gold);
+        balanceEl.textContent = `💲 ${shopData.gold.toLocaleString(locale)}`;
+        rows.forEach(r => r.remove());
+        showWindowMessage($('.piw-shop-window'), `Venda concluída: +💲 ${Number(result.goldGained || 0).toLocaleString(locale)}`);
+        sendGameMessage({ type: 'pokes-get' });
+        // Recarrega a lista para refletir o servidor
+        await new Promise(r => setTimeout(r, 400));
+        pokemonList = await requestFreshGameEvent('pokes', 'pokes-get', { timeoutMs: 3000, attempts: 2 });
+        renderSellPokemon();
+        updateSellPokeSummary();
+    } catch (err) {
+        showWindowMessage($('.piw-shop-window'), `Falha: ${err.message}`, true);
+    } finally {
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Vender Pokémon';
+    }
+}
+function updateMarkAllLabel() {
+    if (activeTab === 'sell-items') {
+        const eligible = Array.from(sellItemsList.querySelectorAll('.piw-sell-check:not(:disabled)'));
+        const allSelected = eligible.length > 0 && eligible.every(c => c.checked);
+        markAllBtn.textContent = allSelected ? 'Desmarcar todos' : 'Marcar todos';
+    } else if (activeTab === 'sell-pokemon') {
+        const eligible = Array.from(pokeListEl.querySelectorAll('.piw-sell-row--poke:not([hidden]) .piw-sell-check:not(:disabled)'));
+        const allSelected = eligible.length > 0 && eligible.every(c => c.checked);
+        markAllBtn.textContent = allSelected ? 'Desmarcar todos' : 'Marcar todos';
+    }
+}
+
+markAllBtn.addEventListener('click', () => {
+    if (activeTab === 'sell-items') {
+        const eligible = Array.from(sellItemsList.querySelectorAll('.piw-sell-check:not(:disabled)'));
+        const shouldSelect = eligible.some(c => !c.checked);
+        eligible.forEach(c => { c.checked = shouldSelect; });
+        updateSellItemsSummary();
+    } else if (activeTab === 'sell-pokemon') {
+        const eligible = Array.from(pokeListEl.querySelectorAll('.piw-sell-row--poke:not([hidden]) .piw-sell-check:not(:disabled)'));
+        const shouldSelect = eligible.some(c => !c.checked);
+        eligible.forEach(c => { c.checked = shouldSelect; });
+        updateSellPokeSummary();
+    }
+   });
+    switchTab(activeTab);
+}
 
     function getMarketListings(payload) {
         if (Array.isArray(payload)) return payload;
@@ -5307,122 +5887,6 @@
             });
         }
         return ballCatalogPromise;
-    }
-
-    async function showPortableBallShop() {
-        document.querySelector('.portable-ball-backdrop')?.remove();
-        const backdrop = document.createElement('div');
-        backdrop.className = 'portable-ball-backdrop';
-        backdrop.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.62);z-index:10050;display:flex;align-items:center;justify-content:center;padding:16px;';
-        backdrop.innerHTML = `
-            <div class="ball-window script-portable-ball-window" style="width:min(680px,95vw);max-height:86vh;display:flex;flex-direction:column;background:#0c161f;border:1px solid #2b4c66;border-radius:10px;box-shadow:0 16px 50px rgba(0,0,0,.75);">
-                <div class="ball-head" style="display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid #1a2d3a;">
-                    <b style="flex:1;color:#e2e8f0;">🔴 Poké Bolas e Cura</b>
-                    <span class="ball-gold" style="color:#f6c453;"></span>
-                    <button class="cfg-x portable-ball-close" type="button" aria-label="Close">×</button>
-                </div>
-                <div class="portable-ball-status" style="padding:8px 12px;color:#a0aec0;font-size:12px;">${tr('loading')}</div>
-                <div class="portable-ball-list" style="padding:0 12px 12px;overflow:auto;display:grid;gap:7px;"></div>
-            </div>`;
-        document.body.appendChild(backdrop);
-        const close = () => backdrop.remove();
-        backdrop.querySelector('.portable-ball-close').addEventListener('click', close);
-        backdrop.addEventListener('click', event => { if (event.target === backdrop) close(); });
-
-        const status = backdrop.querySelector('.portable-ball-status');
-        const list = backdrop.querySelector('.portable-ball-list');
-        try {
-            ballCatalogPromise = null;
-            markCatalogPromise = null;
-            const [shopData, ballsData, inventory] = await Promise.all([
-                loadMarkCatalog(),
-                loadBallCatalog(),
-                requestFreshGameEvent('inventory', 'inv-get', { timeoutMs: 3000, attempts: 2 })
-            ]);
-            const locale = getGameLanguage() === 'pt' ? 'pt-BR' : 'en-US';
-            const blockedBalls = new Set(['idle ball', 'master ball']);
-            const balls = (Array.isArray(shopData.balls) ? shopData.balls : [])
-                .filter(ball => !blockedBalls.has(String(ball.name || '').trim().toLocaleLowerCase()));
-            const consumables = (Array.isArray(shopData.items) ? shopData.items : [])
-                .filter(item => ['heal', 'revive'].includes(String(item.category || '').toLocaleLowerCase()) || /potion|revive/i.test(String(item.name || '')));
-            const itemCounts = new Map(inventory.map(item => [String(item.itemId), Number(item.quantity) || 0]));
-            const data = { gold: Number(shopData.gold ?? ballsData.gold ?? 0) };
-            backdrop.querySelector('.ball-gold').textContent = `💲 ${data.gold.toLocaleString(locale)}`;
-            status.textContent = '';
-
-            const addHeading = label => {
-                const heading = document.createElement('div');
-                heading.className = 'portable-shop-heading';
-                heading.textContent = label;
-                list.appendChild(heading);
-            };
-
-            const renderProduct = (product, kind) => {
-                const row = document.createElement('div');
-                row.className = 'ball-row';
-                row.style.cssText = 'display:grid;grid-template-columns:minmax(150px,1fr) auto;gap:12px;align-items:center;background:#14222d;border:1px solid #1f3545;border-radius:7px;padding:9px 11px;';
-                const info = document.createElement('div');
-                info.style.cssText = 'display:grid;grid-template-columns:36px 1fr;gap:9px;align-items:center;';
-                const icon = document.createElement('img');
-                icon.src = normalizeGameItemIcon(product.icon || product.iconUrl);
-                icon.alt = product.name || '';
-                icon.style.cssText = 'width:34px;height:34px;object-fit:contain;';
-                icon.onerror = () => { icon.style.visibility = 'hidden'; };
-                const details = document.createElement('div');
-                const initialCount = kind === 'ball'
-                    ? Number(ballsData.counts?.[String(product.id)] || 0)
-                    : Number(itemCounts.get(String(product.id)) || 0);
-                row.dataset.ownedCount = String(initialCount);
-                details.innerHTML = `<b style="color:#e2e8f0;">${escapeHTML(product.name)}</b><small class="portable-ball-owned" style="display:block;color:#a0aec0;margin-top:3px;">${initialCount.toLocaleString(locale)}× ${tr('inStock')} · 💲${Number(product.priceGold || 0).toLocaleString(locale)}</small>`;
-                info.append(icon, details);
-                const actions = document.createElement('div');
-                actions.className = 'ball-actions';
-                actions.style.cssText = 'display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end;';
-                [1, 10, 100, 1000, 10000].forEach(quantity => {
-                    const button = document.createElement('button');
-                    button.type = 'button';
-                    button.className = 'ball-buy';
-                    button.textContent = `+${quantity.toLocaleString(getGameLanguage() === 'pt' ? 'pt-BR' : 'en-US')}`;
-                    button.addEventListener('click', async () => {
-                        button.disabled = true;
-                        try {
-                            const confirmed = await new Promise(resolve => showPurchaseConfirm({
-                                name: product.name,
-                                quantity,
-                                unitPrice: Number(product.priceGold) || 0,
-                                currentGold: Number(data.gold) || 0
-                            }, resolve));
-                            if (!confirmed) return;
-                            const result = await buyFromMarkShop(product, kind, quantity);
-                            data.gold = Number(result.gold ?? data.gold);
-                            const serverCount = kind === 'ball'
-                                ? result.counts?.[String(product.id)]
-                                : result.inventory?.find?.(item => String(item.itemId) === String(product.id))?.quantity;
-                            const currentCount = Number(row.dataset.ownedCount || 0);
-                            const count = Number(serverCount ?? (currentCount + quantity));
-                            row.dataset.ownedCount = String(count);
-                            info.querySelector('.portable-ball-owned').textContent = `${count.toLocaleString(locale)}× ${tr('inStock')} · 💲${Number(product.priceGold || 0).toLocaleString(locale)}`;
-                            backdrop.querySelector('.ball-gold').textContent = `💲 ${data.gold.toLocaleString(locale)}`;
-                            showWindowMessage(backdrop.querySelector('.script-portable-ball-window'), tr('purchaseDone'));
-                        } catch (error) {
-                            showWindowMessage(backdrop.querySelector('.script-portable-ball-window'), `${tr('purchaseFailed')} ${error.message}`, true);
-                        } finally {
-                            button.disabled = false;
-                        }
-                    });
-                    actions.appendChild(button);
-                });
-                row.append(info, actions);
-                list.appendChild(row);
-            };
-
-            addHeading('Poké Bolas');
-            balls.forEach(ball => renderProduct(ball, 'ball'));
-            addHeading('Potions e Revives');
-            consumables.forEach(item => renderProduct(item, 'item'));
-        } catch (error) {
-            status.textContent = `${tr('loadFailed')} ${error.message || ''}`.trim();
-        }
     }
 
     function injectHuntBallEnhancements(ballWindow) {
@@ -6863,11 +7327,12 @@
     });
 
     function initializeDOMEnhancements() {
-        applyMapScriptState();
-        observer.observe(document.body, { childList: true, subtree: true });
-        injectQuickTPButton();
-        setInterval(syncSidebarLocation, 1000);
-    }
+    applyMapScriptState();
+    observer.observe(document.body, { childList: true, subtree: true });
+    injectQuickTPButton();
+    setInterval(syncSidebarLocation, 1000);
+loadNativeLocks();
+}
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', initializeDOMEnhancements, { once: true });
     } else {

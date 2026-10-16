@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Poke Idle World - Quality of Life (PIW-QOL) - KizaniN
 // @namespace    http://tampermonkey.net/
-// @version      10.6.1
+// @version      10.7.0
 // @description  Mercado e Depot fora das hunts, retorno rápido à cidade, buscas de itens e auto-reconnect resiliente.
 // @author       Desjunior (JulianoCLI)
 // @updater      KizaniN
@@ -2236,6 +2236,17 @@ function isNativeLocked(entry) {
 .piw-card-info h3 { margin: 0 0 4px; font-size: 14px; color: #f0ead8; font-weight: 700; }
 .piw-card-meta { display: flex; gap: 8px; flex-wrap: wrap; font-size: 11px; color: #8fa0b0; }
 .piw-card-owned { color: #63b3ed; }
+.piw-shop-card .piw-card-owned {
+    font-size: 15px;
+    font-weight: 700;
+    color: #63b3ed;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+.piw-shop-card .piw-card-meta {
+    font-size: 13px;
+}
 .piw-card-rate { color: #f6c453; }
 .piw-card-price { margin-top: 5px; font-size: 13px; font-weight: 800; color: #f0cd7d; }
 .piw-card-actions {
@@ -2320,135 +2331,226 @@ function isNativeLocked(entry) {
 .piw-filter-actions button:hover { border-color: rgba(200,170,110,.4); color: #f0cd7d; background: rgba(200,170,110,.07); }
 
 /* Lista de venda */
-.piw-sell-list,
-.piw-sell-items-list { display: flex; flex-direction: column; gap: 6px; }
-
-.piw-sell-row {
+.piw-sell-list {
     display: grid;
-    grid-template-columns: 22px 44px 1fr auto 36px;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 10px;
+    padding: 4px 0;
+}
+
+@media (max-width: 1100px) { .piw-sell-list { grid-template-columns: repeat(4, minmax(0,1fr)); } }
+@media (max-width: 860px)  { .piw-sell-list { grid-template-columns: repeat(3, minmax(0,1fr)); } }
+@media (max-width: 620px)  { .piw-sell-list { grid-template-columns: repeat(2, minmax(0,1fr)); } }
+
+/* Card Pokémon */
+.piw-sell-row--poke {
+    position: relative;
+    display: flex;
+    flex-direction: column;
     align-items: center;
-    gap: 12px;
-    padding: 9px 12px;
+    gap: 6px;
+    padding: 10px 8px;
     background: rgba(255,255,255,.025);
-    border: 1px solid rgba(255,255,255,.05);
-    border-radius: 9px;
+    border: 1px solid rgba(255,255,255,.07);
+    border-radius: 10px;
     cursor: pointer;
     transition: all .12s;
+    text-align: center;
 }
-.piw-sell-row:hover { background: rgba(200,170,110,.05); border-color: rgba(200,170,110,.20); }
-.piw-sell-row.is-locked { opacity: .55; }
-.piw-sell-row[hidden] { display: none !important; }
+.piw-sell-row--poke:hover {
+    background: rgba(200,170,110,.06);
+    border-color: rgba(200,170,110,.28);
+}
+.piw-sell-row--poke.is-locked { opacity: .55; }
+.piw-sell-row--poke[hidden] { display: none !important; }
+
+.piw-sell-row--poke .piw-sell-icon {
+    width: 72px; height: 72px;
+    display: grid; place-items: center;
+    background: rgba(0,0,0,.28);
+    border-radius: 10px;
+}
+.piw-sell-row--poke .piw-sell-icon img {
+    width: 64px; height: 64px;
+    object-fit: contain;
+    image-rendering: pixelated;
+}
+
+.piw-sell-row--poke .piw-sell-info {
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    align-items: center;
+}
+.piw-sell-row--poke .piw-sell-name {
+    font-size: 12px;
+    font-weight: 700;
+    color: #f0ead8;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 100%;
+}
+.piw-sell-row--poke .piw-sell-meta {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 4px 8px;
+    font-size: 10.5px;
+    color: #8fa0b0;
+}
+.piw-sell-row--poke .piw-quality-label {
+    font-weight: 800;
+}
+.piw-sell-row--poke .piw-sell-price {
+    font-size: 11px;
+    color: #f0cd7d;
+    font-weight: 800;
+}
+
+/* Checkbox escondido no canto sup. esquerdo */
+.piw-sell-row--poke .piw-sell-check {
+    position: absolute;
+    top: 8px; left: 8px;
+    width: 16px; height: 16px;
+    accent-color: #c8a24e;
+    cursor: pointer;
+}
+
+/* Lock no canto sup. direito */
+.piw-sell-row--poke .piw-sell-lock {
+    position: absolute;
+    top: 6px; right: 6px;
+    width: 26px; height: 26px;
+    display: grid; place-items: center;
+    background: rgba(255,255,255,.05);
+    border: 1px solid rgba(255,255,255,.10);
+    border-radius: 6px;
+    font-size: 13px;
+    cursor: pointer;
+    transition: all .12s;
+    padding: 0;
+}
+.piw-sell-row--poke .piw-sell-lock:hover {
+    background: rgba(200,170,110,.15);
+    border-color: rgba(200,170,110,.4);
+}
+.piw-sell-row--poke .piw-sell-lock.is-locked {
+    background: rgba(245,101,101,.14);
+    border-color: rgba(245,101,101,.4);
+}
+.piw-sell-items-list {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 10px;
+    padding: 4px 0;
+}
+@media (max-width: 1100px) { .piw-sell-items-list { grid-template-columns: repeat(4, minmax(0,1fr)); } }
+@media (max-width: 860px)  { .piw-sell-items-list { grid-template-columns: repeat(3, minmax(0,1fr)); } }
+@media (max-width: 620px)  { .piw-sell-items-list { grid-template-columns: repeat(2, minmax(0,1fr)); } }
 
 .piw-sell-row--item {
-    grid-template-columns: 22px 44px 1fr 90px 36px;
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    padding: 10px 8px;
+    background: rgba(255,255,255,.025);
+    border: 1px solid rgba(255,255,255,.07);
+    border-radius: 10px;
+    cursor: pointer;
+    transition: all .12s;
+    text-align: center;
 }
-
-.piw-sell-check {
-    width: 18px; height: 18px;
-    accent-color: #c8a24e; cursor: pointer;
-    margin: 0;
+.piw-sell-row--item:hover {
+    background: rgba(200,170,110,.06);
+    border-color: rgba(200,170,110,.28);
 }
-.piw-sell-check:disabled { cursor: not-allowed; }
+.piw-sell-row--item.is-locked { opacity: .55; }
+.piw-sell-row--item[hidden] { display: none !important; }
 
-.piw-sell-icon {
-    width: 44px; height: 44px;
+.piw-sell-row--item .piw-sell-icon {
+    width: 72px; height: 72px;
     display: grid; place-items: center;
-    background: rgba(0,0,0,.30);
-    border-radius: 8px;
+    background: rgba(0,0,0,.28);
+    border-radius: 10px;
 }
-.piw-sell-icon img { width: 36px; height: 36px; object-fit: contain; image-rendering: pixelated; }
+.piw-sell-row--item .piw-sell-icon img {
+    width: 60px; height: 60px;
+    object-fit: contain;
+}
 
-.piw-sell-info { min-width: 0; }
-.piw-sell-name {
-    display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
-    font-size: 13px; font-weight: 700; color: #f0ead8;
+.piw-sell-row--item .piw-sell-info {
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    align-items: center;
 }
-.piw-tag {
-    font-size: 9.5px; font-weight: 800;
-    padding: 2px 5px; border-radius: 4px;
-    text-transform: uppercase; letter-spacing: .3px;
+.piw-sell-row--item .piw-sell-name {
+    font-size: 12px;
+    font-weight: 700;
+    color: #f0ead8;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 100%;
 }
-.piw-tag--shiny { background: linear-gradient(90deg,#f6c453,#f0a020); color: #2a1a00; }
-.piw-tag--locked { background: rgba(245,101,101,.15); color: #feb2b2; border: 1px solid rgba(245,101,101,.3); }
-.piw-sell-meta {
-    display: flex; gap: 10px; flex-wrap: wrap;
-    margin-top: 3px;
-    font-size: 11px; color: #8fa0b0;
+.piw-sell-row--item .piw-sell-meta {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 4px 8px;
+    font-size: 10.5px;
+    color: #8fa0b0;
 }
-.piw-sell-meta .piw-quality-label { font-weight: 800; }
-.piw-sell-potential { color: #63b3ed; font-weight: 700; }
-.piw-sell-price { font-size: 13px; font-weight: 800; color: #f0cd7d; white-space: nowrap; }
+.piw-sell-row--item .piw-sell-price {
+    color: #f0cd7d;
+    font-weight: 800;
+    font-size: 11px;
+}
 
-.piw-sell-qty {
-    width: 90px; box-sizing: border-box;
-    padding: 6px 8px;
+.piw-sell-row--item .piw-sell-qty {
+    width: 100%;
+    max-width: 110px;
+    padding: 5px 6px;
+    font-size: 11px;
+    text-align: center;
     background: rgba(0,0,0,.35);
     color: #e8e2d0;
     border: 1px solid rgba(255,255,255,.10);
     border-radius: 6px;
-    font: inherit; font-size: 12px;
-    text-align: center;
 }
-.piw-sell-qty:disabled { opacity: .45; }
+.piw-sell-row--item .piw-sell-qty:disabled { opacity: .4; }
 
-.piw-sell-lock {
-    width: 32px; height: 32px;
+.piw-sell-row--item .piw-sell-check {
+    position: absolute;
+    top: 8px; left: 8px;
+    width: 16px; height: 16px;
+    accent-color: #c8a24e;
+    cursor: pointer;
+}
+.piw-sell-row--item .piw-sell-lock {
+    position: absolute;
+    top: 6px; right: 6px;
+    width: 26px; height: 26px;
     display: grid; place-items: center;
-    background: rgba(255,255,255,.04);
+    background: rgba(255,255,255,.05);
     border: 1px solid rgba(255,255,255,.10);
-    border-radius: 7px;
-    font-size: 15px; cursor: pointer;
-    transition: all .12s;
+    border-radius: 6px;
+    font-size: 13px;
+    cursor: pointer;
+    padding: 0;
 }
-.piw-sell-lock:hover { background: rgba(200,170,110,.12); border-color: rgba(200,170,110,.35); }
-.piw-sell-lock.is-locked { background: rgba(245,101,101,.12); border-color: rgba(245,101,101,.35); }
-
-/* Footer */
-.piw-shop-footer {
-    display: flex; align-items: center; justify-content: space-between;
-    padding: 10px 18px;
-    border-top: 1px solid rgba(200,170,110,.15);
-    background: rgba(0,0,0,.20);
-    font-size: 12px; color: #cbd5e0;
+.piw-sell-row--item .piw-sell-lock:hover {
+    background: rgba(200,170,110,.15);
+    border-color: rgba(200,170,110,.4);
 }
-.piw-sell-summary { font-weight: 600; }
-.piw-sell-actions { display: flex; gap: 8px; }
-
-.piw-btn {
-    padding: 9px 18px;
-    border-radius: 8px;
-    font-size: 12px; font-weight: 800;
-    cursor: pointer; transition: all .12s;
-    border: 1px solid transparent;
-}
-.piw-btn--ghost { background: transparent; color: #cbd5e0; border-color: rgba(255,255,255,.12); }
-.piw-btn--ghost:hover { background: rgba(255,255,255,.05); }
-.piw-btn--gold {
-    background: linear-gradient(180deg, #e6cd8e, #c8a24e);
-    color: #1a1206; border-color: #6a5223;
-}
-.piw-btn--gold:hover:not(:disabled) { filter: brightness(1.08); transform: translateY(-1px); }
-.piw-btn--gold:disabled { opacity: .45; cursor: not-allowed; }
-
-/* Sidebar: botão de venda */
-#dock-btn-sell { color: #f6c453; font-size: 15px; }
-
-@media (max-width: 640px) {
-    .piw-filter-bar { flex-direction: column; align-items: stretch; }
-    .piw-filter-actions { margin-left: 0; }
-    .piw-sell-row { grid-template-columns: 22px 40px 1fr 36px; }
-    .piw-sell-row--item { grid-template-columns: 22px 40px 1fr 70px 36px; }
-    .piw-sell-price { grid-column: 3 / 4; grid-row: 2; font-size: 11px; }
-}
-/* Botão "Marcar todos" no footer */
-.piw-mark-all {
-    border-color: rgba(200,170,110,.30) !important;
-    color: #e8e2d0 !important;
-}
-.piw-mark-all:hover {
-    background: rgba(200,170,110,.12) !important;
-    border-color: rgba(200,170,110,.50) !important;
-    color: #f0cd7d !important;
+.piw-sell-row--item .piw-sell-lock.is-locked {
+    background: rgba(245,101,101,.14);
+    border-color: rgba(245,101,101,.4);
 }
     `;
     function appendStyleWhenReady(styleElement) {
@@ -2911,16 +3013,15 @@ function isNativeLocked(entry) {
         if (!sidebar) return;
         const location = getSidebarLocation();
         if (sidebar.dataset.location !== location) {
-    sidebar.dataset.location = location;
-    if (location === 'hunt') {
-        sidebar.querySelectorAll('.script-shop-menu').forEach(menu => { menu.hidden = true; });
-        document.querySelector('.portable-depot-backdrop')?.remove();
-        document.querySelector('.script-market-backdrop')?.remove();
+        sidebar.dataset.location = location;
+        if (location === 'hunt') {
+            sidebar.querySelectorAll('.script-shop-menu').forEach(menu => { menu.hidden = true; });
+            document.querySelector('.portable-depot-backdrop')?.remove();
+            document.querySelector('.script-market-backdrop')?.remove();
+        }
+    const shopsBtn = document.getElementById('dock-btn-shops');
+    if (shopsBtn) shopsBtn.style.display = (location === 'city') ? '' : 'none';
     }
-
-    const sellBtn = document.getElementById('dock-btn-sell');
-    if (sellBtn) sellBtn.style.display = (location === 'city') ? '' : 'none';
-}
         updateNavButtonAppearance();
     }
 
@@ -2984,26 +3085,17 @@ function isNativeLocked(entry) {
         }
 
         if (!document.getElementById('dock-btn-shops')) {
-    // 🏪 Comprar (abre direto no tab Buy)
-    const buyBtn = document.createElement('button');
-    buyBtn.id = 'dock-btn-shops';
-    buyBtn.className = 'dock-btn';
-    buyBtn.type = 'button';
-    buyBtn.textContent = '🏪';
-    buyBtn.title = 'Comprar (Poké Bolas & Poções)';
-    buyBtn.addEventListener('click', () => showPortableShop('buy'));
-    sidebar.appendChild(buyBtn);
-
-    // 💰 Vender (abre direto no tab Sell Items)
-    const sellBtn = document.createElement('button');
-    sellBtn.id = 'dock-btn-sell';
-    sellBtn.className = 'dock-btn';
-    sellBtn.type = 'button';
-    sellBtn.textContent = '💰';
-    sellBtn.title = 'Vender Itens & Pokémon';
-    sellBtn.addEventListener('click', () => showPortableShop('sell-items'));
-    sidebar.appendChild(sellBtn);
-}
+            // 🏪 Comprar (abre direto no tab Buy)
+               const buyBtn = document.createElement('button');
+            buyBtn.id = 'dock-btn-shops';
+            buyBtn.className = 'dock-btn';
+            buyBtn.type = 'button';
+            buyBtn.textContent = '🏪';
+            buyBtn.title = 'Comprar (Poké Bolas & Poções)';
+            buyBtn.addEventListener('click', () => showPortableShop('buy'));
+            sidebar.appendChild(buyBtn);
+        
+            }
 
         if (!document.getElementById('dock-btn-depot')) {
             const depotButton = document.createElement('button');
@@ -4995,9 +5087,9 @@ function switchTab(tab) {
                 <div class="piw-card-price">💲 ${Number(product.priceGold || 0).toLocaleString(locale)}</div>
             </div>
             <div class="piw-card-actions">
-                ${[1, 10, 100, 1000, 10000].map(q =>
-                    `<button type="button" class="piw-buy-btn" data-qty="${q}">+${q.toLocaleString(locale)}</button>`
-                ).join('')}
+            ${[500, 1000, 5000, 10000].map(q =>
+                `<button type="button" class="piw-buy-btn" data-qty="${q}">+${q.toLocaleString(locale)}</button>`
+            ).join('')}
             </div>
         `;
         card.querySelector('img')?.addEventListener('error', e => e.currentTarget.remove(), { once: true });
@@ -5033,7 +5125,11 @@ function switchTab(tab) {
         return card;
     }
 
-    // Bloco de Poké Bolas
+    // Cria a âncora uma vez
+    const anchor = document.createComment('shop-anchor');
+    buyGrid.parentElement.insertBefore(anchor, buyGrid);
+    
+    // Poké Bolas
     if (balls.length) {
         const group = document.createElement('div');
         group.className = 'piw-shop-group';
@@ -5042,10 +5138,10 @@ function switchTab(tab) {
         grid.className = 'piw-shop-grid';
         balls.forEach(b => grid.appendChild(renderProductCard(b, 'ball', Number(ballCounts[String(b.id)] || 0))));
         group.appendChild(grid);
-        buyGrid.parentElement.insertBefore(group, buyGrid.nextSibling);
+        anchor.parentElement.insertBefore(group, anchor);
     }
-
-    // Bloco de Poções/Revives
+    
+    // Poções/Revives
     if (healItems.length) {
         const group = document.createElement('div');
         group.className = 'piw-shop-group';
@@ -5054,7 +5150,7 @@ function switchTab(tab) {
         grid.className = 'piw-shop-grid';
         healItems.forEach(i => grid.appendChild(renderProductCard(i, 'item', Number(itemCounts.get(String(i.id)) || 0))));
         group.appendChild(grid);
-        buyGrid.parentElement.insertBefore(group, buyGrid.nextSibling);
+        anchor.parentElement.insertBefore(group, anchor);
     }
 
     buyGrid.remove(); // remove o grid vazio placeholder

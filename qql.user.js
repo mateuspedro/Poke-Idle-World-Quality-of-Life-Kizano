@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Poke Idle World - Quality of Life (PIW-QOL) - KizaniN
 // @namespace    http://tampermonkey.net/
-// @version      10.7.0
+// @version      10.7.2
 // @description  Mercado e Depot fora das hunts, retorno rápido à cidade, buscas de itens e auto-reconnect resiliente.
 // @author       Desjunior (JulianoCLI)
 // @updater      KizaniN
@@ -2551,6 +2551,117 @@ function isNativeLocked(entry) {
 .piw-sell-row--item .piw-sell-lock.is-locked {
     background: rgba(245,101,101,.14);
     border-color: rgba(245,101,101,.4);
+}
+/* Footer da loja */
+.piw-shop-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 12px 18px;
+    border-top: 1px solid rgba(200, 170, 110, .18);
+    background: linear-gradient(0deg, rgba(0, 0, 0, .35), transparent);
+    flex-shrink: 0;
+}
+
+.piw-sell-summary {
+    font-size: 13px;
+    font-weight: 600;
+    color: #cbd5e0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+    flex: 1 1 auto;
+}
+
+.piw-sell-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-left: auto;
+    flex: 0 0 auto;
+}
+
+.piw-sell-actions[hidden] { display: none !important; }
+
+/* Botões do footer */
+.piw-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    min-height: 38px;
+    padding: 8px 18px;
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 800;
+    line-height: 1;
+    cursor: pointer;
+    transition: all .12s ease;
+    border: 1px solid transparent;
+    white-space: nowrap;
+    font-family: var(--piw-game-font);
+}
+
+.piw-btn:disabled {
+    opacity: .45;
+    cursor: not-allowed;
+}
+
+/* Botão fantasma (Marcar todos, Cancelar) */
+.piw-btn--ghost {
+    background: rgba(255, 255, 255, .04);
+    color: #e8e2d0;
+    border: 1px solid rgba(200, 170, 110, .28);
+}
+.piw-btn--ghost:hover:not(:disabled) {
+    background: rgba(200, 170, 110, .14);
+    border-color: rgba(230, 205, 142, .55);
+    color: #f4ead0;
+}
+
+/* Botão dourado (Vender) */
+.piw-btn--gold {
+    background: linear-gradient(180deg, #e6cd8e, #c8a24e);
+    color: #1a1206;
+    border: 1px solid #6a5223;
+    box-shadow: 0 2px 6px rgba(200, 162, 78, .25);
+}
+.piw-btn--gold:hover:not(:disabled) {
+    filter: brightness(1.08);
+    transform: translateY(-1px);
+}
+.piw-btn--gold:disabled {
+    filter: grayscale(.6) brightness(.85);
+    box-shadow: none;
+}
+
+/* Marcar todos (botão especial) */
+.piw-mark-all {
+    border-color: rgba(200, 170, 110, .35) !important;
+    color: #e8e2d0 !important;
+}
+.piw-mark-all:hover:not(:disabled) {
+    background: rgba(200, 170, 110, .16) !important;
+    border-color: rgba(200, 170, 110, .55) !important;
+    color: #f0cd7d !important;
+}
+
+/* Em telas pequenas empilha */
+@media (max-width: 640px) {
+    .piw-shop-footer {
+        flex-direction: column;
+        align-items: stretch;
+    }
+    .piw-sell-actions {
+        margin-left: 0;
+        justify-content: flex-end;
+        flex-wrap: wrap;
+    }
+    .piw-sell-summary {
+        text-align: center;
+    }
 }
     `;
     function appendStyleWhenReady(styleElement) {

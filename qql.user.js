@@ -4,7 +4,6 @@
 // @version      10.11.3
 // @description  Mercado e Depot fora das hunts, retorno rápido à cidade, buscas de itens e auto-reconnect resiliente.
 // @author       KizaniN
-// @updater      KizaniN
 // @match        https://poke.idleworld.online/play*
 // @grant        none
 // @run-at       document-start
@@ -13,6 +12,7 @@
 // @updateURL    https://raw.githubusercontent.com/mateuspedro/Poke-Idle-World-Quality-of-Life-Kizano/main/qql.user.js
 // @downloadURL  https://raw.githubusercontent.com/mateuspedro/Poke-Idle-World-Quality-of-Life-Kizano/main/qql.user.js
 // ==/UserScript==
+
 
 (function() {
     'use strict';

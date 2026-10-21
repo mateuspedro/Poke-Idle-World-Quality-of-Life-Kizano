@@ -3688,7 +3688,7 @@ function isNativeLocked(entry) {
         });
     }
 
-        function buildSimpleList() {
+    function buildSimpleList() {
         if (!isScriptMapActive() || isRendering) return;
         isRendering = true;
 
@@ -3736,17 +3736,21 @@ function isNativeLocked(entry) {
                 customFilterBar = document.createElement('div');
                 customFilterBar.id = 'custom-hunts-filter-bar';
                 customFilterBar.style = `
-                    display: grid; grid-template-columns: minmax(190px,1.4fr) minmax(130px,1fr) minmax(170px,1.1fr);
+                    display: grid;
+                    grid-template-columns: minmax(175px,1.3fr) minmax(150px,1fr) minmax(130px,1fr) minmax(170px,1.1fr);
                     gap: 8px; margin-top: 8px; margin-bottom: 4px; font-size: 13px;
                 `;
 
                 customFilterBar.innerHTML = `
-                    <select id="sort-hunts-select" title="Ordenar hunts" style="background:#0c161f;color:#cbd5e0;border:1px solid #1a2d3a;padding:6px 10px;border-radius:6px;outline:none;font-family:inherit;cursor:pointer;">
+                    <select id="sort-hunts-select" title="Ordenação primária" style="background:#0c161f;color:#cbd5e0;border:1px solid #1a2d3a;padding:6px 10px;border-radius:6px;outline:none;font-family:inherit;cursor:pointer;">
                         <option value="">Sem ordenação</option>
                         <option value="price_desc">Preço: Maior -> Menor</option>
                         <option value="price_asc">Preço: Menor -> Maior</option>
                         <option value="eff_desc">Efetividade: Maior Vantagem</option>
                         <option value="xp_desc">Somente XP: Maior XP</option>
+                    </select>
+                    <select id="sort-hunts-level-select" title="Ordenação secundária (nível)" style="background:#0c161f;color:#cbd5e0;border:1px solid #1a2d3a;padding:6px 10px;border-radius:6px;outline:none;font-family:inherit;cursor:pointer;">
+                        <option value="">Nível: sem ordenação</option>
                         <option value="level_asc">Nível: Menor -> Maior</option>
                         <option value="level_desc">Nível: Maior -> Menor</option>
                     </select>
@@ -3771,6 +3775,7 @@ function isNativeLocked(entry) {
                     setMapFilters({
                         ...current,
                         sort: customFilterBar.querySelector('#sort-hunts-select').value,
+                        sortLevel: customFilterBar.querySelector('#sort-hunts-level-select').value,
                         type: customFilterBar.querySelector('#filter-hunts-type').value,
                         access: customFilterBar.querySelector('#filter-hunts-access').value
                     });
@@ -3783,15 +3788,15 @@ function isNativeLocked(entry) {
                 customFilterBar.addEventListener('input', persistFiltersFromBar);
             }
 
-            // Reaplica os valores salvos em cada build (o typeSelect é repovoado
-            // dinamicamente mais abaixo, então precisa ser reavaliado depois).
+            // Reaplica os valores salvos em cada build.
             {
                 const savedFilters = getMapFilters();
                 const sortEl = customFilterBar.querySelector('#sort-hunts-select');
+                const sortLevelEl = customFilterBar.querySelector('#sort-hunts-level-select');
                 const accessEl = customFilterBar.querySelector('#filter-hunts-access');
                 if (sortEl && !sortEl.value && savedFilters.sort) sortEl.value = savedFilters.sort;
+                if (sortLevelEl && !sortLevelEl.value && savedFilters.sortLevel) sortLevelEl.value = savedFilters.sortLevel;
                 if (accessEl && savedFilters.access) accessEl.value = savedFilters.access;
-                // O typeEl é repovoado mais abaixo neste mesmo build — não define aqui.
             }
 
             let captureFilterBar = document.getElementById('custom-hunts-capture-bar');
@@ -3820,6 +3825,7 @@ function isNativeLocked(entry) {
                         const nativeSearch = document.querySelector('.map-filter-q');
                         if (nativeSearch) nativeSearch.value = '';
                         customFilterBar.querySelector('#sort-hunts-select').value = '';
+                        customFilterBar.querySelector('#sort-hunts-level-select').value = '';
                         customFilterBar.querySelector('#filter-hunts-type').value = '';
                         customFilterBar.querySelector('#filter-hunts-access').value = 'all';
                         captureFilterBar.dataset.active = '';
@@ -4034,29 +4040,42 @@ function isNativeLocked(entry) {
             huntDataList = huntDataList.filter(hunt => viewMode === 'cities' ? hunt.city : !hunt.city);
 
             const sortVal = document.getElementById('sort-hunts-select')?.value || '';
-            // Ordenação composta: favoritas primeiro, depois o critério escolhido.
-            // Nos modos de preço/efetividade/XP/nível, desempata por nome.
+            const sortLevelVal = document.getElementById('sort-hunts-level-select')?.value || '';
+
+            // Comparador primário (ordenação escolhida).
+            const primaryCompare = (a, b) => {
+                if (sortVal === 'price_desc') return b.numericPrice - a.numericPrice;
+                if (sortVal === 'price_asc') return a.numericPrice - b.numericPrice;
+                if (sortVal === 'eff_desc') {
+                    if (b.effectiveness !== a.effectiveness) return b.effectiveness - a.effectiveness;
+                    return b.requiredLevel - a.requiredLevel;
+                }
+                if (sortVal === 'xp_desc') {
+                    if (b.experience !== a.experience) return b.experience - a.experience;
+                    return b.effectiveness - a.effectiveness;
+                }
+                return 0;
+            };
+
+            // Comparador secundário (nível), aplicado como desempate.
+            const secondaryCompare = (a, b) => {
+                if (sortLevelVal === 'level_asc') return a.requiredLevel - b.requiredLevel;
+                if (sortLevelVal === 'level_desc') return b.requiredLevel - a.requiredLevel;
+                return 0;
+            };
+
             huntDataList.sort((a, b) => {
                 const aFav = favorites.includes(a.name);
                 const bFav = favorites.includes(b.name);
                 if (aFav && !bFav) return -1;
                 if (!aFav && bFav) return 1;
 
-                const levelA = Number(a.requiredLevel) || 0;
-                const levelB = Number(b.requiredLevel) || 0;
+                const primary = primaryCompare(a, b);
+                if (primary !== 0) return primary;
 
-                if (sortVal === 'price_desc') return (b.numericPrice - a.numericPrice) || a.name.localeCompare(b.name);
-                if (sortVal === 'price_asc') return (a.numericPrice - b.numericPrice) || a.name.localeCompare(b.name);
-                if (sortVal === 'eff_desc') {
-                    if (b.effectiveness !== a.effectiveness) return b.effectiveness - a.effectiveness;
-                    return levelB - levelA;
-                }
-                if (sortVal === 'xp_desc') {
-                    if (b.experience !== a.experience) return b.experience - a.experience;
-                    return b.effectiveness - a.effectiveness;
-                }
-                if (sortVal === 'level_asc') return (levelA - levelB) || a.name.localeCompare(b.name);
-                if (sortVal === 'level_desc') return (levelB - levelA) || a.name.localeCompare(b.name);
+                const secondary = secondaryCompare(a, b);
+                if (secondary !== 0) return secondary;
+
                 return a.name.localeCompare(b.name);
             });
 
@@ -4067,7 +4086,7 @@ function isNativeLocked(entry) {
             }
 
             const renderSignature = JSON.stringify({
-                query, sortVal, selectedType, accessFilter, capturedFilter, trainerLevel, favorites, viewMode, lastHunt,
+                query, sortVal, sortLevelVal, selectedType, accessFilter, capturedFilter, trainerLevel, favorites, viewMode, lastHunt,
                 rows: huntDataList.map(hunt => [
                     hunt.name, hunt.lvlText, hunt.canAccess, hunt.isHere, hunt.isCaught,
                     hunt.numericPrice, hunt.experience, hunt.effectiveness, hunt.requiredLevel

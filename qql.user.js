@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Poke Idle World - Quality of Life (PIW-QOL) - KizaniN
 // @namespace    http://tampermonkey.net/
-// @version      10.11.3
+// @version      10.12.4
 // @description  Mercado e Depot fora das hunts, retorno rápido à cidade, buscas de itens e auto-reconnect resiliente.
 // @author       KizaniN
 // @match        https://poke.idleworld.online/play*
@@ -112,25 +112,60 @@ async function toggleNativePokemonLock(pokemonId, locked) {
 }
 
     function handleCapturedPokemon(message) {
-        const name = message?.speciesName
-            || message?.name
-            || message?.pokemonName
-            || message?.poke?.name
-            || message?.pokemon?.name
-            || '';
-        const cleanName = getCleanHuntName(name);
+        // O catch-result pode vir em formatos diferentes. Tentamos o máximo de campos.
+        const candidates = [
+            message?.speciesName,
+            message?.name,
+            message?.pokemonName,
+            message?.poke?.name,
+            message?.pokemon?.name,
+            message?.species?.name,
+            message?.data?.speciesName,
+            message?.data?.name,
+            message?.data?.pokemon?.name,
+            message?.capture?.speciesName,
+            message?.capture?.name
+        ];
+        let cleanName = '';
+        for (const candidate of candidates) {
+            if (!candidate) continue;
+            const cleaned = getCleanHuntName(candidate);
+            if (cleaned) { cleanName = cleaned; break; }
+        }
         if (!cleanName) return;
         if (message?.success === false) return;
 
+        let changed = false;
         if (!globalCaughtPokemonNames.has(cleanName)) {
             globalCaughtPokemonNames.add(cleanName);
             saveCaughtPokemonCache();
+            changed = true;
+        }
+        // Fallback: se o catch-result trouxer o speciesId, resolve o nome pelo catálogo.
+        const speciesId = Number(message?.speciesId ?? message?.pokeId ?? message?.pokemon?.speciesId ?? message?.data?.speciesId);
+        if (Number.isFinite(speciesId)) {
+            for (const [name, poke] of globalCreatureApiData.entries()) {
+                if (Number(poke?.speciesId ?? poke?.pokeId ?? poke?.id) === speciesId) {
+                    if (!globalCaughtPokemonNames.has(name)) {
+                        globalCaughtPokemonNames.add(name);
+                        saveCaughtPokemonCache();
+                        changed = true;
+                    }
+                    break;
+                }
+            }
+        }
+
+        if (changed) {
+            // 🔑 Invalida a assinatura para forçar re-render mesmo sem outros filtros mudarem.
             lastMapRenderSignature = '';
             setTimeout(buildSimpleList, 0);
         }
 
         loadCaughtPokedexData(true);
     }
+
+    
     function handleGameSocketMessage(event, socket) {
         let message;
         try {
@@ -2768,6 +2803,8 @@ function isNativeLocked(entry) {
     function saveCaughtPokemonCache() {
         localStorage.setItem(STORAGE_CAUGHT_POKEMON, JSON.stringify([...globalCaughtPokemonNames]));
     }
+
+    
     let caughtPokedexPromise = null;
     function loadCaughtPokedexData(force = false) {
         if (!force && caughtPokedexPromise) return caughtPokedexPromise;
@@ -4085,8 +4122,10 @@ function isNativeLocked(entry) {
                 if (lastIndex > 0) huntDataList.unshift(huntDataList.splice(lastIndex, 1)[0]);
             }
 
+            const caughtSignature = [...globalCaughtPokemonNames].sort().join('|');
             const renderSignature = JSON.stringify({
                 query, sortVal, sortLevelVal, selectedType, accessFilter, capturedFilter, trainerLevel, favorites, viewMode, lastHunt,
+                caught: caughtSignature,
                 rows: huntDataList.map(hunt => [
                     hunt.name, hunt.lvlText, hunt.canAccess, hunt.isHere, hunt.isCaught,
                     hunt.numericPrice, hunt.experience, hunt.effectiveness, hunt.requiredLevel

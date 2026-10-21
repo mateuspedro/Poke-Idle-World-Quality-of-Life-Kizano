@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Poke Idle World - Quality of Life (PIW-QOL) - KizaniN
 // @namespace    http://tampermonkey.net/
-// @version      10.8.1
+// @version      10.9.3
 // @description  Mercado e Depot fora das hunts, retorno rápido à cidade, buscas de itens e auto-reconnect resiliente.
 // @author       Desjunior (JulianoCLI)
 // @updater      KizaniN
@@ -3688,7 +3688,7 @@ function isNativeLocked(entry) {
         });
     }
 
-    function buildSimpleList() {
+        function buildSimpleList() {
         if (!isScriptMapActive() || isRendering) return;
         isRendering = true;
 
@@ -3731,12 +3731,12 @@ function isNativeLocked(entry) {
             const viewMode = mapWindow.dataset.scriptMapView || 'hunts';
             viewTabs.querySelectorAll('[data-view]').forEach(button => button.classList.toggle('on', button.dataset.view === viewMode));
 
-                        let customFilterBar = document.getElementById('custom-hunts-filter-bar');
+            let customFilterBar = document.getElementById('custom-hunts-filter-bar');
             if (!customFilterBar) {
                 customFilterBar = document.createElement('div');
                 customFilterBar.id = 'custom-hunts-filter-bar';
                 customFilterBar.style = `
-                    display: grid; grid-template-columns: minmax(175px,1.4fr) minmax(115px,1fr) minmax(145px,1fr) minmax(90px,0.7fr) minmax(90px,0.7fr);
+                    display: grid; grid-template-columns: minmax(190px,1.4fr) minmax(130px,1fr) minmax(170px,1.1fr);
                     gap: 8px; margin-top: 8px; margin-bottom: 4px; font-size: 13px;
                 `;
 
@@ -3747,6 +3747,8 @@ function isNativeLocked(entry) {
                         <option value="price_asc">Preço: Menor -> Maior</option>
                         <option value="eff_desc">Efetividade: Maior Vantagem</option>
                         <option value="xp_desc">Somente XP: Maior XP</option>
+                        <option value="level_asc">Nível: Menor -> Maior</option>
+                        <option value="level_desc">Nível: Maior -> Menor</option>
                     </select>
                     <select id="filter-hunts-type" title="Filtrar por tipo" style="background:#0c161f;color:#cbd5e0;border:1px solid #1a2d3a;padding:6px 10px;border-radius:6px;outline:none;font-family:inherit;cursor:pointer;">
                         <option value="">Todos os tipos</option>
@@ -3761,8 +3763,6 @@ function isNativeLocked(entry) {
                         <option value="locked">Hunts bloqueadas</option>
                         <option value="not_favorites">Não favoritas</option>
                     </select>
-                    <input id="filter-hunts-level-min" type="number" min="1" placeholder="Nv mín." title="Nível mínimo" style="background:#0c161f;color:#cbd5e0;border:1px solid #1a2d3a;padding:6px 8px;border-radius:6px;outline:none;font-family:inherit;">
-                    <input id="filter-hunts-level-max" type="number" min="1" placeholder="Nv máx." title="Nível máximo" style="background:#0c161f;color:#cbd5e0;border:1px solid #1a2d3a;padding:6px 8px;border-radius:6px;outline:none;font-family:inherit;">
                 `;
                 mapBody.appendChild(customFilterBar);
 
@@ -3772,9 +3772,7 @@ function isNativeLocked(entry) {
                         ...current,
                         sort: customFilterBar.querySelector('#sort-hunts-select').value,
                         type: customFilterBar.querySelector('#filter-hunts-type').value,
-                        access: customFilterBar.querySelector('#filter-hunts-access').value,
-                        levelMin: customFilterBar.querySelector('#filter-hunts-level-min').value,
-                        levelMax: customFilterBar.querySelector('#filter-hunts-level-max').value
+                        access: customFilterBar.querySelector('#filter-hunts-access').value
                     });
                     lastMapRenderSignature = '';
                     isRendering = false;
@@ -3790,14 +3788,9 @@ function isNativeLocked(entry) {
             {
                 const savedFilters = getMapFilters();
                 const sortEl = customFilterBar.querySelector('#sort-hunts-select');
-                const typeEl = customFilterBar.querySelector('#filter-hunts-type');
                 const accessEl = customFilterBar.querySelector('#filter-hunts-access');
-                const levelMinEl = customFilterBar.querySelector('#filter-hunts-level-min');
-                const levelMaxEl = customFilterBar.querySelector('#filter-hunts-level-max');
                 if (sortEl && !sortEl.value && savedFilters.sort) sortEl.value = savedFilters.sort;
                 if (accessEl && savedFilters.access) accessEl.value = savedFilters.access;
-                if (levelMinEl && !levelMinEl.value && savedFilters.levelMin) levelMinEl.value = savedFilters.levelMin;
-                if (levelMaxEl && !levelMaxEl.value && savedFilters.levelMax) levelMaxEl.value = savedFilters.levelMax;
                 // O typeEl é repovoado mais abaixo neste mesmo build — não define aqui.
             }
 
@@ -3820,7 +3813,7 @@ function isNativeLocked(entry) {
                     btn.classList.toggle('on', btn.dataset.captured === captureFilterBar.dataset.active);
                 });
 
-                                captureFilterBar.addEventListener('click', (e) => {
+                captureFilterBar.addEventListener('click', (e) => {
                     const resetBtn = e.target.closest('.script-cl-reset-filters');
                     if (resetBtn) {
                         clearMapFilters();
@@ -3829,8 +3822,6 @@ function isNativeLocked(entry) {
                         customFilterBar.querySelector('#sort-hunts-select').value = '';
                         customFilterBar.querySelector('#filter-hunts-type').value = '';
                         customFilterBar.querySelector('#filter-hunts-access').value = 'all';
-                        customFilterBar.querySelector('#filter-hunts-level-min').value = '';
-                        customFilterBar.querySelector('#filter-hunts-level-max').value = '';
                         captureFilterBar.dataset.active = '';
                         captureFilterBar.querySelectorAll('.dex-fbtn[data-captured]').forEach(b => b.classList.remove('on'));
                         lastMapRenderSignature = '';
@@ -3997,20 +3988,17 @@ function isNativeLocked(entry) {
                 );
             }
 
-                        const typeSelect = document.getElementById('filter-hunts-type');
+            const typeSelect = document.getElementById('filter-hunts-type');
             const savedType = getMapFilters().type || '';
             const availableTypes = [...new Set(
                 huntDataList.filter(hunt => hunt.canAccess).flatMap(hunt => hunt.defenderTypes)
             )].sort();
             if (typeSelect) {
-                // Preserva o valor selecionado atual (o usuário pode ter acabado de escolher).
                 const currentType = typeSelect.value || savedType;
                 typeSelect.replaceChildren(new Option('Todos os tipos', ''));
                 availableTypes.forEach(type => typeSelect.add(new Option(type.toUpperCase(), type)));
                 const finalValue = availableTypes.includes(currentType) ? currentType : '';
                 typeSelect.value = finalValue;
-                // Se o valor salvo não estiver mais disponível, limpa do storage
-                // para evitar um filtro "fantasma".
                 if (savedType && !availableTypes.includes(savedType)) {
                     setMapFilters({ ...getMapFilters(), type: '' });
                 }
@@ -4037,16 +4025,6 @@ function isNativeLocked(entry) {
                 huntDataList = huntDataList.filter(hunt => !favorites.includes(hunt.name));
             }
 
-            const savedLevelFilters = getMapFilters();
-            const minLevel = savedLevelFilters.levelMin === '' ? null : Number(savedLevelFilters.levelMin);
-            const maxLevel = savedLevelFilters.levelMax === '' ? null : Number(savedLevelFilters.levelMax);
-            if (minLevel !== null && Number.isFinite(minLevel)) {
-                huntDataList = huntDataList.filter(hunt => hunt.city || hunt.requiredLevel >= minLevel);
-            }
-            if (maxLevel !== null && Number.isFinite(maxLevel)) {
-                huntDataList = huntDataList.filter(hunt => hunt.city || hunt.requiredLevel <= maxLevel);
-            }
-
             const capturedFilter = document.getElementById('custom-hunts-capture-bar')?.dataset.active || '';
             if (capturedFilter === 'yes') {
                 huntDataList = huntDataList.filter(hunt => hunt.city || hunt.isCaught);
@@ -4056,24 +4034,29 @@ function isNativeLocked(entry) {
             huntDataList = huntDataList.filter(hunt => viewMode === 'cities' ? hunt.city : !hunt.city);
 
             const sortVal = document.getElementById('sort-hunts-select')?.value || '';
+            // Ordenação composta: favoritas primeiro, depois o critério escolhido.
+            // Nos modos de preço/efetividade/XP/nível, desempata por nome.
             huntDataList.sort((a, b) => {
                 const aFav = favorites.includes(a.name);
                 const bFav = favorites.includes(b.name);
                 if (aFav && !bFav) return -1;
                 if (!aFav && bFav) return 1;
 
-                if (sortVal === 'price_desc') return b.numericPrice - a.numericPrice;
-                if (sortVal === 'price_asc') return a.numericPrice - b.numericPrice;
+                const levelA = Number(a.requiredLevel) || 0;
+                const levelB = Number(b.requiredLevel) || 0;
+
+                if (sortVal === 'price_desc') return (b.numericPrice - a.numericPrice) || a.name.localeCompare(b.name);
+                if (sortVal === 'price_asc') return (a.numericPrice - b.numericPrice) || a.name.localeCompare(b.name);
                 if (sortVal === 'eff_desc') {
                     if (b.effectiveness !== a.effectiveness) return b.effectiveness - a.effectiveness;
-                    const lvlA = parseInt(a.lvlText.replace(/\D/g, '')) || 0;
-                    const lvlB = parseInt(b.lvlText.replace(/\D/g, '')) || 0;
-                    return lvlB - lvlA;
+                    return levelB - levelA;
                 }
                 if (sortVal === 'xp_desc') {
                     if (b.experience !== a.experience) return b.experience - a.experience;
                     return b.effectiveness - a.effectiveness;
                 }
+                if (sortVal === 'level_asc') return (levelA - levelB) || a.name.localeCompare(b.name);
+                if (sortVal === 'level_desc') return (levelB - levelA) || a.name.localeCompare(b.name);
                 return a.name.localeCompare(b.name);
             });
 
@@ -4087,7 +4070,7 @@ function isNativeLocked(entry) {
                 query, sortVal, selectedType, accessFilter, capturedFilter, trainerLevel, favorites, viewMode, lastHunt,
                 rows: huntDataList.map(hunt => [
                     hunt.name, hunt.lvlText, hunt.canAccess, hunt.isHere, hunt.isCaught,
-                    hunt.numericPrice, hunt.experience, hunt.effectiveness
+                    hunt.numericPrice, hunt.experience, hunt.effectiveness, hunt.requiredLevel
                 ])
             });
             if (renderSignature === lastMapRenderSignature && simpleContainer.childElementCount) return;

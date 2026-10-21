@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         Poke Idle World - Quality of Life (PIW-QOL) - KizaniN
 // @namespace    http://tampermonkey.net/
-// @version      10.9.3
+// @version      10.11.3
 // @description  Mercado e Depot fora das hunts, retorno rápido à cidade, buscas de itens e auto-reconnect resiliente.
-// @author       Desjunior (JulianoCLI)
+// @author       KizaniN
 // @updater      KizaniN
 // @match        https://poke.idleworld.online/play*
 // @grant        none

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Poke Idle World - Quality of Life (PIW-QOL) - KizaniN
 // @namespace    http://tampermonkey.net/
-// @version      10.12.4
+// @version      11.1.1
 // @description  Mercado e Depot fora das hunts, retorno rápido à cidade, buscas de itens e auto-reconnect resiliente.
 // @author       KizaniN
 // @match        https://poke.idleworld.online/play*
@@ -165,7 +165,7 @@ async function toggleNativePokemonLock(pokemonId, locked) {
         loadCaughtPokedexData(true);
     }
 
-    
+
     function handleGameSocketMessage(event, socket) {
         let message;
         try {
@@ -630,6 +630,7 @@ async function toggleNativePokemonLock(pokemonId, locked) {
     const STORAGE_CUSTOM_FONT = 'script_custom_font_v1';
     const STORAGE_CUSTOM_FONT_NAME = 'script_custom_font_name_v1';
     const CUSTOM_FONT_FAMILY = 'PIW Uploaded Font';
+    const STORAGE_DOCK_WRAP = 'script_dock_wrap_v1';
 
     const GAME_FONT_OPTIONS = {
         barlow: 'Barlow, "Barlow Fallback", system-ui, sans-serif',
@@ -686,14 +687,153 @@ async function toggleNativePokemonLock(pokemonId, locked) {
         document.documentElement.style.setProperty('--piw-game-font', key === 'custom' && custom ? custom : GAME_FONT_OPTIONS[key === 'custom' ? 'barlow' : key]);
     }
     function isAutoReconnectActive() { return localStorage.getItem(STORAGE_AUTO_RECONNECT) === 'true'; }
-    const OPT_IN_PREFERENCES = new Set([STORAGE_SHOW_QUALITY_POTENTIAL]);
-    const preferenceEnabled = key => OPT_IN_PREFERENCES.has(key)
-        ? localStorage.getItem(key) === 'true'
-        : localStorage.getItem(key) !== 'false';
-    function applyVisualPreferences() {
-        document.documentElement.classList.toggle('script-custom-scrollbars', preferenceEnabled(STORAGE_CUSTOM_SCROLLBARS));
-        document.documentElement.classList.toggle('script-unified-fonts', preferenceEnabled(STORAGE_UNIFIED_FONTS));
+const OPT_IN_PREFERENCES = new Set([STORAGE_SHOW_QUALITY_POTENTIAL]);
+const preferenceEnabled = key => OPT_IN_PREFERENCES.has(key)
+    ? localStorage.getItem(key) === 'true'
+    : localStorage.getItem(key) !== 'false';
+
+// ============================================================
+// Dock sem scroll: grade adaptável + empurrar widgets abaixo
+// ============================================================
+
+function isDockWrapActive() {
+    return localStorage.getItem(STORAGE_DOCK_WRAP) !== 'false';
+}
+function setDockWrapActive(state) {
+    localStorage.setItem(STORAGE_DOCK_WRAP, state ? 'true' : 'false');
+    applyVisualPreferences();
+    setTimeout(applyDockWrapLayout, 0);
+}
+
+// Elementos que devem descer quando o dock está ativo
+const DOCK_PUSH_SELECTORS = [
+    '.phud.game-hud-tl[data-guide="party-hud"]',
+    '.phud.game-hud-tl',          // fallback
+    '.bi-wrap',
+    '.ah-panel'
+];
+
+// Guarda o estado original de cada elemento empurrado, para restaurar
+const pushedByDock = new WeakMap();
+
+function pushWidgetsBelowDock(dockBottom) {
+    const desired = Math.max(0, Math.ceil(dockBottom) + 8);
+    DOCK_PUSH_SELECTORS.forEach(selector => {
+        document.querySelectorAll(selector).forEach(el => {
+            // evita empurrar o próprio dock se ele casar com algum seletor
+            if (el.closest('nav.game-dock')) return;
+
+            const rect = el.getBoundingClientRect();
+            if (rect.height === 0) return;
+
+            if (!pushedByDock.has(el)) {
+                pushedByDock.set(el, {
+                    marginTop: el.style.marginTop || '',
+                    top: el.style.top || '',
+                    transform: el.style.transform || ''
+                });
+            }
+
+            const style = getComputedStyle(el);
+            if (style.position === 'fixed') {
+                // Para fixed, usa top se disponível, senão transform
+                if (style.top !== 'auto' && style.top !== '') {
+                    el.style.setProperty('top', `${desired}px`, 'important');
+                } else {
+                    el.style.setProperty('transform', `translateY(${desired}px)`, 'important');
+                }
+            } else {
+                el.style.setProperty('margin-top', `${desired}px`, 'important');
+            }
+        });
+    });
+}
+
+function clearDockPushes() {
+    DOCK_PUSH_SELECTORS.forEach(selector => {
+        document.querySelectorAll(selector).forEach(el => {
+            const original = pushedByDock.get(el);
+            if (original) {
+                el.style.marginTop = original.marginTop;
+                el.style.top = original.top;
+                el.style.transform = original.transform;
+                if (!original.marginTop) el.style.removeProperty('margin-top');
+                if (!original.top) el.style.removeProperty('top');
+                if (!original.transform) el.style.removeProperty('transform');
+                pushedByDock.delete(el);
+            } else {
+                el.style.removeProperty('margin-top');
+                el.style.removeProperty('top');
+                el.style.removeProperty('transform');
+            }
+        });
+    });
+}
+
+let dockResizeObserver = null;
+function observeDockResize() {
+    const dock = document.querySelector('nav.game-dock');
+    if (!dock || dockResizeObserver) return;
+    dockResizeObserver = new ResizeObserver(() => {
+        if (isDockWrapActive()) {
+            requestAnimationFrame(() => {
+                const dockRect = dock.getBoundingClientRect();
+                pushWidgetsBelowDock(dockRect.bottom);
+            });
+        }
+    });
+    dockResizeObserver.observe(dock);
+}
+
+function applyDockWrapLayout() {
+    const dock = document.querySelector('nav.game-dock');
+    if (!dock) return;
+
+    const active = isDockWrapActive();
+    document.documentElement.classList.toggle('script-dock-wrap', active);
+
+    if (!active) {
+        dock.style.removeProperty('max-width');
+        dock.style.removeProperty('width');
+        clearDockPushes();
+        return;
     }
+
+    const scroll = dock.querySelector('.dock-scroll');
+    if (!scroll) return;
+
+    // Largura do grid: quantas colunas cabem na tela
+    const buttons = scroll.querySelectorAll('.dock-btn');
+    const count = buttons.length;
+    if (!count) return;
+
+    const CELL = 44;   // 40px botão + 4px gap
+    const PADDING = 16;
+    const MAX_COLS_FIT = Math.max(1, Math.floor((window.innerWidth - 24) / CELL));
+    const cols = Math.min(count, MAX_COLS_FIT);
+    const width = cols * CELL + PADDING;
+    dock.style.setProperty('max-width', `${width}px`, 'important');
+    dock.style.setProperty('width', `${width}px`, 'important');
+
+    // Empurra widgets abaixo do dock
+    requestAnimationFrame(() => {
+        const dockRect = dock.getBoundingClientRect();
+        pushWidgetsBelowDock(dockRect.bottom);
+    });
+}
+
+// Recalcula ao redimensionar a janela
+let dockResizeTimer = null;
+window.addEventListener('resize', () => {
+    if (dockResizeTimer) clearTimeout(dockResizeTimer);
+    dockResizeTimer = setTimeout(applyDockWrapLayout, 120);
+});
+
+function applyVisualPreferences() {
+    document.documentElement.classList.toggle('script-custom-scrollbars', preferenceEnabled(STORAGE_CUSTOM_SCROLLBARS));
+    document.documentElement.classList.toggle('script-unified-fonts', preferenceEnabled(STORAGE_UNIFIED_FONTS));
+    document.documentElement.classList.toggle('script-dock-wrap', isDockWrapActive());
+}
 
     let isRendering = false;
     let cachedTrainerLevel = null;
@@ -2698,6 +2838,86 @@ function isNativeLocked(entry) {
         text-align: center;
     }
 }
+/* ===== Dock: grade adaptável sem scroll ===== */
+html.script-dock-wrap .game-dock {
+    position: fixed !important;
+    right: 8px !important;
+    top: 8px !important;
+    bottom: auto !important;
+    left: auto !important;
+    transform: none !important;
+    height: auto !important;
+    max-height: calc(100vh - 16px) !important;
+    width: auto !important;
+    max-width: min(96vw, 1200px) !important;
+    padding: 6px !important;
+    z-index: 9100 !important;
+    background: rgba(20, 16, 10, .92) !important;
+    border: 2px solid rgb(120, 90, 40) !important;
+    border-radius: 12px !important;
+    box-shadow: 0 10px 28px rgba(0,0,0,.55) !important;
+    overflow: visible !important;
+    box-sizing: border-box !important;
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 4px !important;
+}
+
+html.script-dock-wrap .game-dock .dock-scroll {
+    display: grid !important;
+    grid-template-columns: repeat(auto-fill, minmax(40px, 1fr)) !important;
+    gap: 4px !important;
+    width: 100% !important;
+    max-height: none !important;
+    height: auto !important;
+    overflow: visible !important;
+    overflow-x: visible !important;
+    overflow-y: visible !important;
+    scroll-snap-type: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    box-sizing: border-box !important;
+    grid-auto-flow: row dense !important;
+    justify-content: center !important;
+    align-content: start !important;
+}
+
+html.script-dock-wrap .game-dock .dock-scroll .dock-btn {
+    width: 40px !important;
+    height: 40px !important;
+    min-width: 40px !important;
+    min-height: 40px !important;
+    padding: 4px !important;
+    box-sizing: border-box !important;
+    flex: none !important;
+    scroll-snap-align: none !important;
+    scroll-margin: 0 !important;
+}
+
+html.script-dock-wrap .game-dock .dock-scroll .dock-btn img {
+    width: 100% !important;
+    height: 100% !important;
+    object-fit: contain !important;
+}
+
+/* Esconde scrollbars do dock */
+html.script-dock-wrap .game-dock .dock-scroll::-webkit-scrollbar,
+html.script-dock-wrap .game-dock::-webkit-scrollbar {
+    display: none !important;
+    width: 0 !important;
+    height: 0 !important;
+}
+html.script-dock-wrap .game-dock .dock-scroll {
+    scrollbar-width: none !important;
+    -ms-overflow-style: none !important;
+}
+
+/* Empurrar widgets abaixo do dock */
+html.script-dock-wrap .phud.game-hud-tl,
+html.script-dock-wrap .bi-wrap,
+html.script-dock-wrap .ah-panel {
+    transition: margin-top .15s ease, top .15s ease, transform .15s ease;
+}
     `;
     function appendStyleWhenReady(styleElement) {
         if (document.head) document.head.appendChild(styleElement);
@@ -2804,7 +3024,7 @@ function isNativeLocked(entry) {
         localStorage.setItem(STORAGE_CAUGHT_POKEMON, JSON.stringify([...globalCaughtPokemonNames]));
     }
 
-    
+
     let caughtPokedexPromise = null;
     function loadCaughtPokedexData(force = false) {
         if (!force && caughtPokedexPromise) return caughtPokedexPromise;
@@ -3242,7 +3462,7 @@ function isNativeLocked(entry) {
             buyBtn.title = 'Comprar (Poké Bolas & Poções)';
             buyBtn.addEventListener('click', () => showPortableShop('buy'));
             sidebar.appendChild(buyBtn);
-        
+
             }
 
         if (!document.getElementById('dock-btn-depot')) {
@@ -3429,13 +3649,15 @@ function isNativeLocked(entry) {
                         </div>`
                     ])}
 
-                    ${category('🪟', 'Interface', [
-                        prefToggle('cfg-custom-scrollbars', STORAGE_CUSTOM_SCROLLBARS, 'Scrollbars minimalistas', 'Substitui as barras brancas pelo estilo transparente.'),
-                        segmentRow({
-                            title: tr('chatInterface'), description: tr('chatInterfaceDesc'),
-                            buttons: [['btn-chat-on', tr('show'), chatActiveState], ['btn-chat-off', tr('hide'), !chatActiveState]]
-                        })
-                    ])}
+            ${category('🪟', 'Interface', [
+                prefToggle('cfg-custom-scrollbars', STORAGE_CUSTOM_SCROLLBARS, 'Scrollbars minimalistas', 'Substitui as barras brancas pelo estilo transparente.'),
+                prefToggle('cfg-dock-wrap', STORAGE_DOCK_WRAP, 'Dock sem scroll (grade adaptável)',
+                           'Transforma a barra de atalhos do jogo em uma grade que quebra linhas automaticamente, sempre mostrando todos os ícones sem rolagem.'),
+                segmentRow({
+                    title: tr('chatInterface'), description: tr('chatInterfaceDesc'),
+                    buttons: [['btn-chat-on', tr('show'), chatActiveState], ['btn-chat-off', tr('hide'), !chatActiveState]]
+                })
+            ])}
 
                     ${category('🔤', 'Fontes', [
                         `<div class="cfg-row script-mods-wide">
@@ -3512,7 +3734,10 @@ function isNativeLocked(entry) {
             });
             modsContent.querySelectorAll('[data-pref-key]').forEach(control => control.addEventListener('change', event => {
                 localStorage.setItem(event.target.dataset.prefKey, String(event.target.checked));
-                applyVisualPreferences();
+               applyVisualPreferences();
+                if (event.target.dataset.prefKey === STORAGE_DOCK_WRAP) {
+                    applyDockWrapLayout();
+                }
                 if (event.target.dataset.prefKey === STORAGE_SHOW_QUALITY_POTENTIAL) {
                     setTimeout(enhancePartyQuality, 0);
                 }
@@ -5280,7 +5505,7 @@ function switchTab(tab) {
     // Cria a âncora uma vez
     const anchor = document.createComment('shop-anchor');
     buyGrid.parentElement.insertBefore(anchor, buyGrid);
-    
+
     // Poké Bolas
     if (balls.length) {
         const group = document.createElement('div');
@@ -5292,7 +5517,7 @@ function switchTab(tab) {
         group.appendChild(grid);
         anchor.parentElement.insertBefore(group, anchor);
     }
-    
+
     // Poções/Revives
     if (healItems.length) {
         const group = document.createElement('div');
@@ -7571,16 +7796,24 @@ markAllBtn.addEventListener('click', () => {
                 if (renderTimeout) clearTimeout(renderTimeout);
                 renderTimeout = setTimeout(buildSimpleList, 200);
             }
+
+            if (document.querySelector('nav.game-dock')) {
+                observeDockResize();
+                if (isDockWrapActive()) applyDockWrapLayout();
+            }
         }, 150);
     });
 
     function initializeDOMEnhancements() {
-    applyMapScriptState();
-    observer.observe(document.body, { childList: true, subtree: true });
-    injectQuickTPButton();
-    setInterval(syncSidebarLocation, 1000);
-loadNativeLocks();
-}
+        applyMapScriptState();
+        observer.observe(document.body, { childList: true, subtree: true });
+        injectQuickTPButton();
+        applyDockWrapLayout();
+        observeDockResize();
+        setInterval(syncSidebarLocation, 1000);
+        loadNativeLocks();
+    }
+
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', initializeDOMEnhancements, { once: true });
     } else {
